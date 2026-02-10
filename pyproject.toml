@@ -1,0 +1,35 @@
+[project]
+name = "octo"
+version = "0.1.0"
+description = "Octi — LangGraph multi-agent console with Rich UI and Telegram"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.2.0",
+    "langchain-anthropic",
+    "langchain-aws",
+    "langchain-openai",
+    "langchain-mcp-adapters",
+    "langgraph>=1.0.8",
+    "langgraph-supervisor",
+    "langgraph-swarm",
+    "langgraph-checkpoint-sqlite",
+    "mcp",
+    "rich",
+    "click",
+    "python-dotenv",
+    "python-telegram-bot>=21",
+    "elevenlabs",
+    "pyyaml",
+    "prompt_toolkit>=3.0",
+    "deepagents",
+]
+
+[project.scripts]
+octo = "octo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["octo*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

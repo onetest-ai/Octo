@@ -1,0 +1,30 @@
+# --- Secrets & credentials ---
+.env
+.mcp.json
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# --- OS ---
+.DS_Store
+
+# --- IDE / tools ---
+.claude/
+
+# --- Octo runtime state (per-user, not project code) ---
+.octo/persona/
+.octo/octo.db
+.octo/octo.db-shm
+.octo/octo.db-wal
+.octo/sessions.json
+.octo/STATE.md
+.octo/memory/
+.octo/projects/
+.octo/agents/*/workspace/
+.octo/gap-analysis-gsd.md
+
+# --- User-specific skills (contain hardcoded orgs/paths) ---
+.octo/skills/gh-tickets/
