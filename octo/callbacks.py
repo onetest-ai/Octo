@@ -410,21 +410,29 @@ class OctiCallbackHandler(BaseCallbackHandler):
         user_message = None
         hint = None
 
-        if "model identifier is invalid" in error_str.lower() or "BedrockException" in error_str:
+        error_lower = error_str.lower()
+
+        if "read timeout" in error_lower or "connect timeout" in error_lower or "timed out" in error_lower:
+            user_message = "Request timed out"
+            hint = "The LLM provider took too long to respond. Try again — it may be a transient issue."
+        elif "model identifier is invalid" in error_lower or "BedrockException" in error_str:
             user_message = "Invalid model identifier"
             hint = "The model may not be available in your region or the model ID is incorrect.\nUse /model to check the current model."
-        elif "rate limit" in error_str.lower() or "too many requests" in error_str.lower():
+        elif "rate limit" in error_lower or "too many requests" in error_lower:
             user_message = "Rate limit exceeded"
             hint = "Wait a moment and try again, or switch to a different model."
-        elif "context length" in error_str.lower() or "too long" in error_str.lower():
+        elif "context length" in error_lower or "too long" in error_lower:
             user_message = "Context length exceeded"
             hint = "The conversation is too long. Use /compact to summarize history, or /clear to reset."
-        elif "authentication" in error_str.lower() or "unauthorized" in error_str.lower() or "api key" in error_str.lower():
+        elif "authentication" in error_lower or "unauthorized" in error_lower or "api key" in error_lower:
             user_message = "Authentication failed"
             hint = "Check your API credentials in .env."
-        elif "model not found" in error_str.lower() or "does not exist" in error_str.lower():
+        elif "model not found" in error_lower or "does not exist" in error_lower:
             user_message = "Model not found"
             hint = "The requested model is not available. Check DEFAULT_MODEL in .env."
+        elif "throttling" in error_lower or "serviceunav" in error_lower:
+            user_message = "Service temporarily unavailable"
+            hint = "The provider is overloaded. Wait a moment and try again."
 
         console.print()
         if user_message:
@@ -472,9 +480,18 @@ class OctiCallbackHandler(BaseCallbackHandler):
         if "Command(graph=" in error_str or "goto=" in error_str:
             return
 
-        # Suppress repeated "input too long" errors — the LLM error handler
-        # already shows a user-friendly message on the first occurrence
-        if "too long" in error_str.lower() or "context length" in error_str.lower():
+        # Suppress errors that are already handled by on_llm_error —
+        # these propagate up through every graph layer as chain errors,
+        # producing duplicate panels for the same root cause.
+        error_lower = error_str.lower()
+        _SUPPRESSED = [
+            "too long", "context length",       # context overflow
+            "read timeout", "timed out",        # timeouts
+            "connect timeout",                  # connection timeouts
+            "rate limit", "too many requests",  # throttling
+            "throttling", "serviceunav",        # service issues
+        ]
+        if any(phrase in error_lower for phrase in _SUPPRESSED):
             return
 
         console.print()

@@ -253,12 +253,15 @@ class TelegramTransport:
             if sender_name:
                 tagged_text = f"[Channel: Telegram | User: {sender_name}]\n\n{user_text}"
 
+            from octo.retry import invoke_with_retry
+
             if self.graph_lock:
                 await self.graph_lock.acquire()
             try:
-                result = await self.graph_app.ainvoke(
+                result = await invoke_with_retry(
+                    self.graph_app,
                     {"messages": [HumanMessage(content=tagged_text)]},
-                    config=config,
+                    config,
                 )
             finally:
                 if self.graph_lock:
@@ -338,9 +341,20 @@ class TelegramTransport:
             except Exception:
                 pass
             await self._reply(update, response_text)
-        except Exception:
-            logger.exception("Error handling Telegram message")
-            await update.message.reply_text("Something went wrong. Check the console.")
+        except Exception as e:
+            error_str = str(e).lower()
+            if "timeout" in error_str or "timed out" in error_str:
+                logger.warning("Telegram message handling timed out: %s", e)
+                await update.message.reply_text("Request timed out. Please try again.")
+            elif "rate limit" in error_str or "throttling" in error_str:
+                logger.warning("Rate limited during Telegram message: %s", e)
+                await update.message.reply_text("Rate limited. Please wait a moment and try again.")
+            elif "too long" in error_str or "context length" in error_str:
+                logger.warning("Context overflow during Telegram message: %s", e)
+                await update.message.reply_text("Conversation too long. Send /clear to reset, or ask me to /compact.")
+            else:
+                logger.exception("Error handling Telegram message")
+                await update.message.reply_text("Something went wrong. Check the console.")
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming voice messages: transcribe → graph → voice reply."""

@@ -664,13 +664,22 @@ async def _chat_loop(
 
                     try:
                         from octo.abort import esc_listener
+                        from octo.retry import invoke_with_retry
+
+                        async def _on_retry(msg: str, attempt: int) -> None:
+                            try:
+                                status.update(f"[yellow]{msg}[/yellow]")
+                            except Exception:
+                                pass
 
                         abort_event = asyncio.Event()
                         async with graph_lock:
                             invoke_task = asyncio.create_task(
-                                app.ainvoke(
+                                invoke_with_retry(
+                                    app,
                                     {"messages": [HumanMessage(content=user_input)]},
-                                    config=config,
+                                    config,
+                                    on_retry=_on_retry,
                                 )
                             )
                             async with esc_listener(abort_event):
@@ -716,7 +725,15 @@ async def _chat_loop(
                 except KeyboardInterrupt:
                     ui.print_info("\nInterrupted. Type 'exit' to quit.")
                 except Exception as e:
-                    ui.print_error(f"Error: {e}")
+                    error_str = str(e).lower()
+                    if "timeout" in error_str or "timed out" in error_str:
+                        ui.print_error("Request timed out. Try again — it may be a transient issue.")
+                    elif "rate limit" in error_str or "throttling" in error_str:
+                        ui.print_error("Rate limited. Wait a moment and try again.")
+                    elif "too long" in error_str or "context length" in error_str:
+                        ui.print_error("Context too long. Use /compact to free space, or /clear to reset.")
+                    else:
+                        ui.print_error(f"Error: {e}")
                     if verbose or debug:
                         logger.exception("Graph invocation error")
 

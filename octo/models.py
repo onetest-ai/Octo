@@ -102,12 +102,18 @@ def _get_bedrock_client():
     global _bedrock_client
     if _bedrock_client is None:
         import boto3
+        from botocore.config import Config
 
         _bedrock_client = boto3.client(
             "bedrock-runtime",
             region_name=AWS_REGION,
             aws_access_key_id=AWS_ACCESS_KEY_ID,
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            config=Config(
+                read_timeout=300,       # 5 min — large contexts need time
+                connect_timeout=10,
+                retries={"max_attempts": 0},  # we handle retries ourselves
+            ),
         )
     return _bedrock_client
 
