@@ -1,7 +1,7 @@
 """Load SKILL.md files → SkillConfig dataclasses."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -15,6 +15,14 @@ class SkillConfig:
     description: str
     body: str  # full markdown content for injection into conversation
     model_invocation: bool = True  # False = user-only (/slash command), not offered to LLM
+    # --- marketplace fields (optional, backward-compatible) ---
+    version: str = "0.0.0"
+    author: str = ""
+    tags: list[str] = field(default_factory=list)
+    dependencies: dict = field(default_factory=dict)
+    requires: list[dict] = field(default_factory=list)
+    permissions: dict = field(default_factory=dict)
+    source: str = "local"  # "local" | "marketplace"
 
 
 def _parse_skill_md(path: Path) -> SkillConfig | None:
@@ -41,7 +49,18 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
     if isinstance(model_invocation, str):
         model_invocation = model_invocation.lower() not in ("false", "no", "0")
 
-    return SkillConfig(name=name, description=description, body=body, model_invocation=model_invocation)
+    return SkillConfig(
+        name=name,
+        description=description,
+        body=body,
+        model_invocation=model_invocation,
+        version=str(meta.get("version", "0.0.0")),
+        author=meta.get("author", ""),
+        tags=meta.get("tags", []),
+        dependencies=meta.get("dependencies", {}),
+        requires=meta.get("requires", []),
+        permissions=meta.get("permissions", {}),
+    )
 
 
 def load_skills() -> list[SkillConfig]:

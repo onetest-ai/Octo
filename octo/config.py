@@ -30,6 +30,14 @@ DB_PATH = OCTO_DIR / "octo.db"
 PERSONA_DIR = OCTO_DIR / "persona"
 MEMORY_DIR = OCTO_DIR / "memory"
 SKILLS_DIR = OCTO_DIR / "skills"
+SKILLS_REGISTRY_URL = os.getenv(
+    "SKILLS_REGISTRY_URL",
+    "https://raw.githubusercontent.com/onetest-ai/skills/main/registry.json",
+)
+SKILLS_CACHE_DIR = OCTO_DIR / "cache"
+SKILLS_CACHE_DIR.mkdir(exist_ok=True)
+SKILLS_CACHE_TTL = int(os.getenv("SKILLS_CACHE_TTL", "3600"))  # seconds
+
 AGENTS_DIR = OCTO_DIR / "agents"
 AGENTS_DIR.mkdir(exist_ok=True)
 OAUTH_DIR = OCTO_DIR / "oauth"  # created on demand by FileTokenStorage

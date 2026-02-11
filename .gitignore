@@ -25,11 +25,17 @@ __pycache__/
 .octo/memory/
 .octo/projects/
 .octo/agents/*/workspace/
-.octo/gap-analysis-gsd.md
-
-# --- User-specific skills (contain hardcoded orgs/paths) ---
-.octo/skills/gh-tickets/
-.octo/workspace/**.md
-.octo/workspace/**.yaml
 .octo/cron.json
-.octo/plans
+.octo/plans/
+
+# --- Skills (managed by marketplace or local install, not tracked) ---
+.octo/skills/
+
+# --- Marketplace cache ---
+.octo/cache/
+
+# --- Workspace (research files, plans, temp docs) ---
+.octo/workspace/
+
+# --- Misc research docs ---
+.octo/gap-analysis-gsd.md

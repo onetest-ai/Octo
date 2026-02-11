@@ -66,6 +66,11 @@ def auth_cmd(action: str, server_name: str | None) -> None:
     asyncio.run(handle_auth(action, server_name))
 
 
+# --- Skills marketplace subcommand ---
+from octo.skills_cli import skills as skills_group
+main.add_command(skills_group)
+
+
 async def _chat_loop(
     model_override: str,
     verbose: bool,
