@@ -696,7 +696,7 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
     skills = load_skills()
 
     # Build use_skill tool — closes over the loaded skills list
-    skill_by_name = {s.name: s.body for s in skills}
+    skill_by_name = {s.name: s for s in skills}
 
     @tool
     def use_skill(skill_name: str, user_request: str = "") -> str:
@@ -710,13 +710,24 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
             skill_name: Name of the skill (e.g. "quick", "verify", "map-codebase").
             user_request: The user's original request or relevant context.
         """
-        body = skill_by_name.get(skill_name)
-        if not body:
+        sk = skill_by_name.get(skill_name)
+        if not sk:
             available = ", ".join(sorted(skill_by_name)) or "(none)"
             return f"Unknown skill '{skill_name}'. Available: {available}"
-        result = f"[Skill: {skill_name}]\n\n{body}"
+        result = f"[Skill: {skill_name}]\n\n{sk.body}"
         if user_request:
             result += f"\n\nUser request: {user_request}"
+        # Progressive disclosure: list available references and scripts
+        if sk.references or sk.scripts:
+            result += "\n\n---\n**Bundled resources** (use Read/Bash tools to access on demand):"
+            if sk.references:
+                result += "\nReference docs:"
+                for ref in sk.references:
+                    result += f"\n- `{sk.skill_dir}/{ref}`"
+            if sk.scripts:
+                result += "\nScripts:"
+                for scr in sk.scripts:
+                    result += f"\n- `{sk.skill_dir}/{scr}`"
         return result
 
     # Build workers:

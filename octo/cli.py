@@ -649,6 +649,17 @@ async def _chat_loop(
                         injected = f"[Skill: {skill.name}]\n\n{skill.body}"
                         if args:
                             injected += f"\n\nUser request: {args}"
+                        # Progressive disclosure: list available references and scripts
+                        if skill.references or skill.scripts:
+                            injected += "\n\n---\n**Bundled resources** (use Read/Bash tools to access on demand):"
+                            if skill.references:
+                                injected += "\nReference docs:"
+                                for ref in skill.references:
+                                    injected += f"\n- `{skill.skill_dir}/{ref}`"
+                            if skill.scripts:
+                                injected += "\nScripts:"
+                                for scr in skill.scripts:
+                                    injected += f"\n- `{skill.skill_dir}/{scr}`"
                         user_input = injected
                     else:
                         ui.print_error(f"Unknown command: {user_input}")
