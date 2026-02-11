@@ -152,6 +152,39 @@ octo --thread <id>         # resume specific thread
 - **Supervisor** — `pre_model_hook` auto-trims at 70% threshold
 - **Manual** — `/compact` LLM-summarizes old messages
 
+### Skills Marketplace
+
+Skills are reusable prompt modules that extend Octo's capabilities. Each skill is a `SKILL.md` with YAML frontmatter declaring dependencies, requirements, and permissions.
+
+**From chat:**
+
+```
+/skills              # list installed skills
+/skills search pdf   # search marketplace
+/skills install pdf  # install + auto-install deps + reload graph
+/skills remove pdf   # uninstall + reload graph
+```
+
+**From CLI:**
+
+```bash
+octo skills search pdf          # search marketplace
+octo skills info pdf            # detailed info + deps
+octo skills install pdf         # install with auto dependency resolution
+octo skills install pdf --no-deps   # skip dependency installation
+octo skills remove pdf          # uninstall
+octo skills update --all        # update all installed skills
+octo skills list                # list installed
+```
+
+Dependencies declared in `SKILL.md` frontmatter are installed automatically:
+- **Python** — `pip install` into the active venv
+- **npm** — `npm install --prefix .octo/` (local node_modules)
+- **MCP** — added to `.mcp.json` (restart or `/mcp reload` to activate)
+- **System** — displayed for manual installation (e.g. `brew install`)
+
+At startup, Octo checks installed skills for missing Python deps and logs warnings. When a skill is invoked at runtime, missing deps are detected and the agent is instructed to install them before proceeding.
+
 ### Built-in Tools
 
 Available to all agents (configurable per agent via `tools:` in AGENT.md):
@@ -288,7 +321,7 @@ GitHub Models auto-routes to the right LangChain class based on the model name:
 | `/compact` | Summarize older messages to free context |
 | `/context` | Show context window usage |
 | `/agents` | List loaded agents |
-| `/skills` | List loaded skills |
+| `/skills [cmd]` | Skills (list/search/install/remove) |
 | `/tools` | List MCP tools by server |
 | `/call [srv] <tool>` | Call MCP tool directly |
 | `/mcp [cmd]` | MCP servers (add/remove/disable/enable/reload) |
@@ -311,6 +344,7 @@ GitHub Models auto-routes to the right LangChain class based on the model name:
 | `octo` | Start interactive chat (default) |
 | `octo init` | Run setup wizard |
 | `octo doctor` | Check configuration health |
+| `octo skills` | Skills marketplace (search/install/update/remove) |
 | `octo auth` | Manage MCP OAuth tokens |
 
 ## Architecture

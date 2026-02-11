@@ -114,7 +114,7 @@ def print_welcome(
     cmds = [
         ("/help", "Show all commands"),
         ("/agents", "List agents"),
-        ("/skills", "List skills"),
+        ("/skills", "Skills management"),
         ("/tools", "MCP tools"),
         ("/mcp", "MCP servers"),
         ("/plan", "Task plan"),
@@ -467,7 +467,7 @@ def print_help() -> None:
         ("/compact", "Summarize older messages to free context"),
         ("/context", "Show context window usage"),
         ("/agents", "List loaded agents"),
-        ("/skills", "List loaded skills"),
+        ("/skills [cmd]", "Skills (list/search/install/remove)"),
         ("/tools", "List MCP tools by server"),
         ("/call [srv] <tool>", "Call MCP tool directly: /call github get_me"),
         ("/mcp [cmd]", "MCP servers (add/remove/disable/enable/reload)"),

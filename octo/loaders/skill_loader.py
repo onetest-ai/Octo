@@ -1,12 +1,28 @@
 """Load SKILL.md files → SkillConfig dataclasses."""
 from __future__ import annotations
 
+import importlib.util
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 from octo.config import SKILLS_DIR
+
+log = logging.getLogger(__name__)
+
+# pip package name → Python import name (only for names that differ)
+_PIP_TO_IMPORT: dict[str, str] = {
+    "pillow": "PIL",
+    "python-docx": "docx",
+    "python-pptx": "pptx",
+    "pyyaml": "yaml",
+    "scikit-learn": "sklearn",
+    "beautifulsoup4": "bs4",
+    "pdf2image": "pdf2image",
+}
 
 
 @dataclass
@@ -99,3 +115,56 @@ def load_skills() -> list[SkillConfig]:
                 skills.append(cfg)
 
     return skills
+
+
+# ---------------------------------------------------------------------------
+# Dependency checking
+# ---------------------------------------------------------------------------
+
+def _pip_name(spec: str) -> str:
+    """Extract bare package name from a pip specifier like 'pdfplumber>=0.11'."""
+    return re.split(r"[><=!~\[]", spec, maxsplit=1)[0].strip().lower()
+
+
+def _import_name(pip_pkg: str) -> str:
+    """Map a pip package name to its Python import name."""
+    key = pip_pkg.lower()
+    if key in _PIP_TO_IMPORT:
+        return _PIP_TO_IMPORT[key]
+    # Default: replace dashes with underscores
+    return key.replace("-", "_")
+
+
+def check_missing_deps(skill: SkillConfig) -> list[str]:
+    """Return list of pip specifiers whose packages are not importable."""
+    python_deps: list[str] = skill.dependencies.get("python", [])
+    if not python_deps:
+        return []
+
+    missing: list[str] = []
+    for spec in python_deps:
+        pkg = _pip_name(spec)
+        mod = _import_name(pkg)
+        if importlib.util.find_spec(mod) is None:
+            missing.append(spec)
+    return missing
+
+
+def verify_skills_deps(skills: list[SkillConfig]) -> dict[str, list[str]]:
+    """Check all skills for missing Python deps. Returns {skill_name: [missing_specs]}.
+
+    Also logs warnings for any skills with missing dependencies.
+    """
+    problems: dict[str, list[str]] = {}
+    for sk in skills:
+        missing = check_missing_deps(sk)
+        if missing:
+            problems[sk.name] = missing
+            log.warning(
+                "Skill '%s' has missing Python deps: %s  "
+                "(run: pip install %s)",
+                sk.name,
+                ", ".join(missing),
+                " ".join(_pip_name(s) for s in missing),
+            )
+    return problems

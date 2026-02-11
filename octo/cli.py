@@ -245,6 +245,16 @@ async def _chat_loop(
         if cron_jobs:
             ui.print_status(f"Cron scheduler active ({len(cron_jobs)} jobs)", "green")
 
+        async def _rebuild_graph():
+            nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
+            mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
+            app, agent_configs, skills = await build_graph(mcp_tools)
+            # Update proactive runners with new graph
+            heartbeat._app = app
+            cron_scheduler._app = app
+            # Refresh tab-completion with new skill names
+            ui.setup_input(_BASE_SLASH_CMDS + [f"/{s.name}" for s in skills])
+
         try:
             while True:
                 user_input = await ui.styled_input_async()
@@ -274,8 +284,79 @@ async def _chat_loop(
                     ui.print_agents(agent_configs)
                     continue
 
-                if user_input == "/skills":
-                    ui.print_skills(skills)
+                if user_input.startswith("/skills"):
+                    parts = user_input.split(maxsplit=2)
+                    sub = parts[1] if len(parts) > 1 else "list"
+                    arg = parts[2].strip() if len(parts) > 2 else ""
+
+                    if sub == "list":
+                        ui.print_skills(skills)
+                    elif sub == "search":
+                        from octo.skills_cli import _fetch_registry
+                        query = arg
+                        registry = _fetch_registry()
+                        results = []
+                        for entry in registry:
+                            if query:
+                                q = query.lower()
+                                if not (q in entry["name"].lower()
+                                        or q in entry.get("description", "").lower()
+                                        or any(q in t.lower() for t in entry.get("tags", []))):
+                                    continue
+                            results.append(entry)
+                        if not results:
+                            ui.print_info("No skills found matching your query.")
+                        else:
+                            for entry in results:
+                                tags = ", ".join(entry.get("tags", []))
+                                ui.print_info(
+                                    f"  {entry['name']:<20} v{entry.get('version', '?'):<8} "
+                                    f"{tags[:25]:<26} {entry.get('description', '')[:40]}"
+                                )
+                            ui.print_info(f"{len(results)} skill(s) found.")
+                    elif sub == "install" and arg:
+                        from octo.skills_cli import (
+                            _download_skill_files, _fetch_registry, _find_in_registry,
+                            _install_deps,
+                        )
+                        skill_name = arg.split()[0]
+                        registry = _fetch_registry()
+                        entry = _find_in_registry(registry, skill_name)
+                        if not entry:
+                            ui.print_error(f"Skill '{skill_name}' not found. Try: /skills search")
+                        else:
+                            from octo.config import SKILLS_DIR
+                            import shutil
+                            dest = SKILLS_DIR / skill_name
+                            if dest.exists():
+                                shutil.rmtree(dest)
+                            files = entry.get("files", ["SKILL.md"])
+                            ui.print_info(f"Installing '{skill_name}' v{entry.get('version', '?')}...")
+                            _download_skill_files(skill_name, files)
+                            _install_deps(skill_name)
+                            ui.print_info(f"Installed '{skill_name}'. Rebuilding graph...")
+                            await _rebuild_graph()
+                            ui.print_info(
+                                f"Done. {len(skills)} skill(s) loaded."
+                            )
+                    elif sub == "remove" and arg:
+                        from octo.config import SKILLS_DIR
+                        import shutil
+                        skill_name = arg.split()[0]
+                        dest = SKILLS_DIR / skill_name
+                        if not dest.is_dir():
+                            ui.print_error(f"Skill '{skill_name}' is not installed.")
+                        else:
+                            shutil.rmtree(dest)
+                            ui.print_info(f"Removed '{skill_name}'. Rebuilding graph...")
+                            await _rebuild_graph()
+                            ui.print_info(
+                                f"Done. {len(skills)} skill(s) loaded."
+                            )
+                    else:
+                        ui.print_error(
+                            "Usage: /skills [list|search <query>|install <name>|remove <name>]"
+                        )
                     continue
 
                 if user_input == "/tools":
@@ -289,16 +370,6 @@ async def _chat_loop(
                     parts = user_input.split(maxsplit=2)
                     sub = parts[1] if len(parts) > 1 else ""
                     arg = parts[2].strip() if len(parts) > 2 else ""
-
-                    async def _rebuild_graph():
-                        nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
-                        mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
-                        app, agent_configs, skills = await build_graph(mcp_tools)
-                        # Update proactive runners with new graph
-                        heartbeat._app = app
-                        cron_scheduler._app = app
-                        # Refresh tab-completion with new skill names
-                        ui.setup_input(_BASE_SLASH_CMDS + [f"/{s.name}" for s in skills])
 
                     if sub == "":
                         ui.print_mcp_status(mcp_get_status(mcp_tools_by_server))

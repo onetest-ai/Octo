@@ -239,9 +239,9 @@ def info(name: str) -> None:
 
 @skills.command()
 @click.argument("name")
-@click.option("--deps", is_flag=True, help="Auto-install dependencies after install")
+@click.option("--no-deps", is_flag=True, help="Skip automatic dependency installation")
 @click.option("--local", "local_path", default="", help="Install from local path instead of registry")
-def install(name: str, deps: bool, local_path: str) -> None:
+def install(name: str, no_deps: bool, local_path: str) -> None:
     """Install a skill from the marketplace (or local path)."""
     dest = SKILLS_DIR / name
 
@@ -274,7 +274,7 @@ def install(name: str, deps: bool, local_path: str) -> None:
         _download_skill_files(name, files)
         click.echo(f"Installed to {dest}")
 
-    if deps:
+    if not no_deps:
         _install_deps(name)
 
 
@@ -369,7 +369,8 @@ def list_skills() -> None:
 @skills.command()
 @click.argument("name", default="")
 @click.option("--all", "update_all", is_flag=True, help="Update all installed skills")
-def update(name: str, update_all: bool) -> None:
+@click.option("--no-deps", is_flag=True, help="Skip dependency installation after update")
+def update(name: str, update_all: bool, no_deps: bool) -> None:
     """Update installed skill(s) from the marketplace."""
     registry = _fetch_registry(force=True)
 
@@ -408,6 +409,8 @@ def update(name: str, update_all: bool) -> None:
         files = entry.get("files", ["SKILL.md"])
         shutil.rmtree(local_dir, ignore_errors=True)
         _download_skill_files(skill_name, files)
+        if not no_deps:
+            _install_deps(skill_name)
         updated += 1
 
     click.echo(f"\n{updated} skill(s) updated.")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -15,7 +16,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from octo.config import AGENTS_DIR, DB_PATH, OCTO_DIR, PROJECTS, SUPERVISOR_MSG_CHAR_LIMIT, get_profile_tiers
 from octo.context import build_system_prompt
 from octo.loaders.agent_loader import AgentConfig, load_agents, load_octo_agents
-from octo.loaders.skill_loader import load_skills
+from octo.loaders.skill_loader import check_missing_deps, load_skills, verify_skills_deps
 from octo.middleware import ToolErrorMiddleware, ToolResultLimitMiddleware, build_summarization_middleware
 from octo.models import make_model
 from octo.tools import BUILTIN_TOOLS
@@ -694,6 +695,7 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
     octo_agents = load_octo_agents() # become LangGraph workers directly
     all_agents = project_agents + octo_agents
     skills = load_skills()
+    verify_skills_deps(skills)  # warn about missing Python deps at startup
 
     # Build use_skill tool — closes over the loaded skills list
     skill_by_name = {s.name: s for s in skills}
@@ -714,7 +716,20 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
         if not sk:
             available = ", ".join(sorted(skill_by_name)) or "(none)"
             return f"Unknown skill '{skill_name}'. Available: {available}"
-        result = f"[Skill: {skill_name}]\n\n{sk.body}"
+
+        # Check for missing Python dependencies and prepend install instructions
+        missing = check_missing_deps(sk)
+        dep_notice = ""
+        if missing:
+            pkgs = " ".join(missing)
+            dep_notice = (
+                f"[IMPORTANT: This skill requires Python packages that are not installed: "
+                f"{', '.join(missing)}.\n"
+                f"Install them first by running: {sys.executable} -m pip install {pkgs}\n"
+                f"Then proceed with the task.]\n\n"
+            )
+
+        result = f"{dep_notice}[Skill: {skill_name}]\n\n{sk.body}"
         if user_request:
             result += f"\n\nUser request: {user_request}"
         # Progressive disclosure: list available references and scripts

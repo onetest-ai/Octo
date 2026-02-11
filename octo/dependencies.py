@@ -10,7 +10,7 @@ import sys
 
 import click
 
-from octo.config import MCP_CONFIG_PATH
+from octo.config import MCP_CONFIG_PATH, OCTO_DIR
 
 
 class DependencyInstaller:
@@ -46,14 +46,16 @@ class DependencyInstaller:
     # ------------------------------------------------------------------
 
     def install_python(self) -> bool:
-        """Install Python pip packages. Returns True if all succeeded."""
+        """Install Python pip packages into the active venv. Returns True if all succeeded."""
         if not self._python:
             return True
 
-        click.echo(f"  Installing Python packages: {', '.join(self._python)}")
+        # sys.executable is the venv Python when Octo runs inside .venv/
+        python = sys.executable
+        click.echo(f"  Installing Python packages ({python}): {', '.join(self._python)}")
         try:
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", *self._python],
+                [python, "-m", "pip", "install", "--quiet", *self._python],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -69,7 +71,7 @@ class DependencyInstaller:
     # ------------------------------------------------------------------
 
     def install_npm(self) -> bool:
-        """Install npm global packages. Returns True if all succeeded."""
+        """Install npm packages locally into .octo/node_modules/. Returns True if all succeeded."""
         if not self._npm:
             return True
 
@@ -77,15 +79,16 @@ class DependencyInstaller:
             click.echo("  Warning: npm not found — skipping npm dependencies.")
             return False
 
-        click.echo(f"  Installing npm packages: {', '.join(self._npm)}")
+        prefix = str(OCTO_DIR)
+        click.echo(f"  Installing npm packages (prefix={prefix}): {', '.join(self._npm)}")
         try:
             subprocess.run(
-                ["npm", "install", "-g", *self._npm],
+                ["npm", "install", "--prefix", prefix, *self._npm],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            click.echo("  npm packages installed.")
+            click.echo(f"  npm packages installed to {prefix}/node_modules/")
             return True
         except subprocess.CalledProcessError as exc:
             click.echo(f"  Failed to install npm packages: {exc.stderr[:200]}")
