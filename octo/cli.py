@@ -862,9 +862,14 @@ async def _chat_loop(
                         continue
 
                 # --- Invoke graph ---
-                # Process file attachments (detect paths, copy to uploads, inline text)
+                # Merge Ctrl+V pasted attachments with any detected file paths
                 from octo.attachments import process_user_input as _process_attachments
-                msg_content, uploaded = _process_attachments(user_input)
+                from octo.attachments import process_pasted_attachments
+                pasted = ui.get_pending_attachments()
+                if pasted:
+                    msg_content, uploaded = process_pasted_attachments(user_input, pasted)
+                else:
+                    msg_content, uploaded = _process_attachments(user_input)
                 if uploaded:
                     names = [p.rsplit("/", 1)[-1] for p in uploaded]
                     ui.print_info(f"Attached: {', '.join(names)}")

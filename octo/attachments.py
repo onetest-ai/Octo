@@ -197,3 +197,73 @@ def process_user_input(text: str) -> tuple[str | list, list[str]]:
         return content_blocks, uploaded_paths
 
     return final_text, uploaded_paths
+
+
+def process_pasted_attachments(
+    text: str, pasted_paths: list[str],
+) -> tuple[str | list, list[str]]:
+    """Process attachments that were pasted via Ctrl+V.
+
+    These files are already in the uploads directory. We just need to
+    build the message content with references / base64 image blocks.
+
+    The text may contain [filename.ext] tags from the paste — strip them
+    to get the clean user prompt.
+    """
+    import re as _re
+
+    # Strip [filename] tags inserted by the paste handler
+    clean_text = _re.sub(r"\[[\w._-]+\]\s*", "", text).strip()
+    if not clean_text:
+        clean_text = "Process the attached file(s)."
+
+    image_blocks = []
+    text_attachments = []
+
+    for path in pasted_paths:
+        ext = Path(path).suffix.lower()
+        filename = Path(path).name
+        size = os.path.getsize(path)
+
+        if ext in _IMAGE_EXTENSIONS:
+            try:
+                with open(path, "rb") as f:
+                    data = base64.b64encode(f.read()).decode("utf-8")
+                mime = mimetypes.guess_type(path)[0] or "image/png"
+                image_blocks.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{mime};base64,{data}"},
+                })
+            except Exception as e:
+                logger.warning("Failed to read pasted image %s: %s", path, e)
+                text_attachments.append(f"\n[Attached image: `{path}`]")
+
+        elif ext in _TEXT_EXTENSIONS:
+            try:
+                if size <= _MAX_INLINE_SIZE:
+                    content = Path(path).read_text(encoding="utf-8", errors="replace")
+                    text_attachments.append(
+                        f"\n---\n**{filename}** ({size:,} bytes):\n"
+                        f"```{ext.lstrip('.')}\n{content}\n```"
+                    )
+                else:
+                    text_attachments.append(
+                        f"\n[Attached: `{path}` ({size:,} bytes — use Read tool)]"
+                    )
+            except Exception:
+                text_attachments.append(f"\n[Attached: `{path}`]")
+
+        else:
+            text_attachments.append(
+                f"\n[Attached: `{path}` ({filename}, {size:,} bytes) — "
+                f"use appropriate tools or skills to read this file]"
+            )
+
+    final_text = clean_text + "\n".join(text_attachments)
+
+    if image_blocks:
+        content_blocks: list = [{"type": "text", "text": final_text}]
+        content_blocks.extend(image_blocks)
+        return content_blocks, pasted_paths
+
+    return final_text, pasted_paths

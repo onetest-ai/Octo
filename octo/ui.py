@@ -539,6 +539,65 @@ def print_help() -> None:
 # ── Input handler (prompt_toolkit) ────────────────────────────────────
 
 _session: PromptSession | None = None
+_pending_attachments: list[str] = []
+
+
+def get_pending_attachments() -> list[str]:
+    """Return and clear pending attachments added via Ctrl+V."""
+    paths = list(_pending_attachments)
+    _pending_attachments.clear()
+    return paths
+
+
+def _clipboard_paste_image() -> str | None:
+    """Check macOS clipboard for image data, save to uploads if found.
+
+    Returns the saved file path, or None if clipboard has no image.
+    """
+    import platform
+    if platform.system() != "Darwin":
+        return None
+
+    import subprocess
+    import tempfile
+    from octo.attachments import copy_to_uploads
+
+    # Use osascript to save clipboard image as PNG (no extra deps needed)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    script = f'''
+set theFile to POSIX file "{tmp_path}"
+try
+    set imgData to the clipboard as «class PNGf»
+    set fileRef to open for access theFile with write permission
+    write imgData to fileRef
+    close access fileRef
+    return "ok"
+on error
+    return "no_image"
+end try
+'''
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.stdout.strip() == "ok":
+            import os
+            if os.path.getsize(tmp_path) > 0:
+                dest = copy_to_uploads(tmp_path, filename="clipboard.png")
+                os.unlink(tmp_path)
+                return dest
+        # Clean up temp file
+        import os
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+    except Exception:
+        import os
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+    return None
 
 
 def _build_key_bindings() -> KeyBindings:
@@ -546,6 +605,9 @@ def _build_key_bindings() -> KeyBindings:
 
     macOS terminals send backslash (0x5c) + carriage return (0x0d) for
     Ctrl+Enter.  We bind that two-key sequence to newline insertion.
+
+    Ctrl+V does smart paste: checks clipboard for image data first,
+    falls back to text paste.
     """
     kb = KeyBindings()
 
@@ -557,6 +619,44 @@ def _build_key_bindings() -> KeyBindings:
     def _ctrl_newline(event):
         """Ctrl+Enter → newline (macOS sends backslash + CR)."""
         event.current_buffer.insert_text("\n")
+
+    @kb.add("c-v", eager=True)
+    def _smart_paste(event):
+        """Ctrl+V — paste image from clipboard, or text if no image."""
+        image_path = _clipboard_paste_image()
+        if image_path:
+            _pending_attachments.append(image_path)
+            filename = image_path.rsplit("/", 1)[-1]
+            count = len(_pending_attachments)
+            # Show a short tag in the input buffer
+            tag = f"[{filename}]" if count == 1 else f"[{filename} +{count - 1}]"
+            event.current_buffer.insert_text(tag + " ")
+        else:
+            # Fall back to normal text paste from clipboard
+            data = event.app.clipboard.get_data()
+            event.current_buffer.insert_text(data.text if data else "")
+
+    _last_ctrl_c: list[float] = [0.0]
+
+    @kb.add("c-c", eager=True)
+    def _ctrl_c(event):
+        """First Ctrl+C clears the line; second within 1s exits."""
+        import time
+        now = time.monotonic()
+        buf = event.current_buffer
+
+        if buf.text.strip():
+            # Line has content — clear it (and pending attachments)
+            buf.reset()
+            _pending_attachments.clear()
+            _last_ctrl_c[0] = 0.0
+        elif now - _last_ctrl_c[0] < 1.0:
+            # Double Ctrl+C on empty line — exit
+            buf.text = "exit"
+            buf.validate_and_handle()
+        else:
+            # First Ctrl+C on empty line — note timestamp
+            _last_ctrl_c[0] = now
 
     return kb
 
@@ -590,11 +690,17 @@ async def styled_input_async() -> str:
         setup_input([])
 
     def _toolbar():
+        attach = ""
+        if _pending_attachments:
+            n = len(_pending_attachments)
+            names = ", ".join(p.rsplit("/", 1)[-1] for p in _pending_attachments)
+            attach = f'  <style fg="ansicyan">📎 {names}</style>'
         keys = (
             " <b>Enter</b> send  "
             "<b>Ctrl+Enter</b> newline  "
-            "<b>Tab</b> complete  "
+            "<b>Ctrl+V</b> paste  "
             "<b>Esc</b> abort"
+            + attach
         )
         if _context_ref:
             used = _context_ref.get("used", 0)
