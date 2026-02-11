@@ -16,6 +16,7 @@ __pycache__/
 
 # --- Octo runtime state (per-user, not project code) ---
 .octo/persona/
+.octo/oauth/
 .octo/octo.db
 .octo/octo.db-shm
 .octo/octo.db-wal
@@ -28,3 +29,6 @@ __pycache__/
 
 # --- User-specific skills (contain hardcoded orgs/paths) ---
 .octo/skills/gh-tickets/
+.octo/workspace/**.md
+.octo/workspace/**.yaml
+.octo/cron.json

@@ -98,9 +98,16 @@ _This is your cheat sheet. Add whatever helps you do your job._"""
 
 def _heartbeat_template(**_kw: str) -> str:
     return """\
-# Heartbeat
+# HEARTBEAT.md
 
-<!-- Keep empty to skip heartbeat. Add periodic tasks below when needed. -->"""
+# Standing instructions for periodic checks (runs every 30 min by default).
+# Remove the '#' from lines below to activate, or add your own tasks.
+# Keep this file empty (comments-only) to disable heartbeat API calls.
+
+# - Check if any todos in the plan are overdue or stuck
+# - If idle for 4+ hours, send a brief status update
+# - Review today's memory and summarize if it's past 6pm
+# - Check for calendar events in the next 30 minutes"""
 
 
 PERSONA_TEMPLATES: dict[str, Callable[..., str]] = {

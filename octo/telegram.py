@@ -215,12 +215,14 @@ class TelegramTransport:
         on_message: Callable[[str], None] | None = None,
         on_response: Callable[[str], None] | None = None,
         callbacks: list | None = None,
+        graph_lock: asyncio.Lock | None = None,
     ) -> None:
         self.graph_app = graph_app
         self.thread_id = thread_id
         self.on_message = on_message    # called when user message arrives
         self.on_response = on_response  # called when AI response is ready
         self.callbacks = callbacks or [] # LangChain callbacks (e.g. CLI tool panels)
+        self.graph_lock = graph_lock     # shared lock to prevent races with heartbeat/cron
         self._app: Application | None = None
 
     async def _send_typing(self, chat_id: int, stop_event: asyncio.Event) -> None:
@@ -251,10 +253,16 @@ class TelegramTransport:
             if sender_name:
                 tagged_text = f"[Channel: Telegram | User: {sender_name}]\n\n{user_text}"
 
-            result = await self.graph_app.ainvoke(
-                {"messages": [HumanMessage(content=tagged_text)]},
-                config=config,
-            )
+            if self.graph_lock:
+                await self.graph_lock.acquire()
+            try:
+                result = await self.graph_app.ainvoke(
+                    {"messages": [HumanMessage(content=tagged_text)]},
+                    config=config,
+                )
+            finally:
+                if self.graph_lock:
+                    self.graph_lock.release()
             # Extract the last substantive AI message, skipping handoff boilerplate
             _HANDOFF_PHRASES = {"transferring back to supervisor", "transferring to supervisor"}
             for msg in reversed(result.get("messages", [])):
@@ -455,6 +463,60 @@ class TelegramTransport:
             await update.message.reply_text(f"Revoked: {removed} ({target_id})")
         else:
             await update.message.reply_text(f"User {target_id} not found.")
+
+    async def send_proactive(self, text: str, source: str = "") -> None:
+        """Send a proactive message to the owner (not a reply to incoming)."""
+        if not self._app or not TELEGRAM_OWNER_ID:
+            return
+
+        chat_id = int(TELEGRAM_OWNER_ID)
+
+        if source:
+            text = f"<b>[{source}]</b>\n\n{text}"
+
+        for chunk in _split_message(text):
+            html_chunk = _markdown_to_telegram_html(chunk)
+            try:
+                await self._app.bot.send_message(
+                    chat_id=chat_id, text=html_chunk, parse_mode="HTML",
+                )
+            except Exception:
+                logger.debug("Proactive HTML send failed, falling back to plain text")
+                try:
+                    await self._app.bot.send_message(chat_id=chat_id, text=chunk)
+                except Exception:
+                    logger.exception("Failed to send proactive message to Telegram")
+
+    async def send_document(self, file_path: str, caption: str = "", chat_id: int | None = None) -> bool:
+        """Send a file as a Telegram document.
+
+        Args:
+            file_path: Absolute path to the file to send.
+            caption: Optional caption (max 1024 chars, HTML supported).
+            chat_id: Target chat. Defaults to TELEGRAM_OWNER_ID.
+
+        Returns:
+            True if sent successfully, False otherwise.
+        """
+        if not self._app:
+            return False
+        target = chat_id or (int(TELEGRAM_OWNER_ID) if TELEGRAM_OWNER_ID else None)
+        if not target:
+            return False
+
+        try:
+            with open(file_path, "rb") as f:
+                html_caption = _markdown_to_telegram_html(caption)[:1024] if caption else None
+                await self._app.bot.send_document(
+                    chat_id=target,
+                    document=f,
+                    caption=html_caption,
+                    parse_mode="HTML" if html_caption else None,
+                )
+            return True
+        except Exception:
+            logger.exception("Failed to send document %s to Telegram", file_path)
+            return False
 
     async def start(self) -> None:
         """Start the Telegram bot (non-blocking)."""

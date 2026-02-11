@@ -115,11 +115,13 @@ def print_welcome(
         ("/help", "Show all commands"),
         ("/agents", "List agents"),
         ("/skills", "List skills"),
+        ("/tools", "MCP tools"),
+        ("/mcp", "MCP servers"),
         ("/plan", "Task plan"),
         ("/context", "Context usage"),
         ("/profile", "Model profile"),
         ("/clear", "New conversation"),
-        ("/sessions", "List sessions"),
+        ("/sessions", "Sessions"),
         ("exit", "End session"),
     ]
     for cmd, desc in cmds:
@@ -245,6 +247,36 @@ def print_skills(skills: Sequence[SkillConfig]) -> None:
     console.print()
 
 
+def print_tools(tools_by_server: dict[str, list]) -> None:
+    """Print MCP tools grouped by server — useful for building include/exclude lists."""
+    if not tools_by_server:
+        print_info("No MCP tools loaded.")
+        return
+
+    total = sum(len(tools) for tools in tools_by_server.values())
+
+    for server_name, tools in tools_by_server.items():
+        table = Table(
+            title=f"{server_name} ({len(tools)} tools)",
+            border_style="blue",
+            box=box.SIMPLE,
+            header_style="bold blue",
+            padding=(0, 1),
+        )
+        table.add_column("Tool name", style="bold yellow", no_wrap=True)
+        table.add_column("Description", max_width=60)
+        for t in sorted(tools, key=lambda x: x.name):
+            desc = getattr(t, "description", "") or ""
+            # First line only
+            desc = desc.split("\n")[0][:60]
+            table.add_row(t.name, desc)
+        console.print(table)
+
+    console.print(f"  [dim]{total} tools total across {len(tools_by_server)} server(s)[/dim]")
+    console.print(f"  [dim]Tip: add \"include_tools\" or \"exclude_tools\" to .mcp.json to filter[/dim]")
+    console.print()
+
+
 def print_projects() -> None:
     """Print the project registry table."""
     from octo.config import PROJECTS
@@ -353,6 +385,71 @@ def print_plan(todos: list[dict[str, str]]) -> None:
     console.print()
 
 
+def print_mcp_status(servers: list[dict]) -> None:
+    """Print MCP server status table."""
+    if not servers:
+        print_info("No MCP servers configured. Use /mcp add to add one.")
+        return
+
+    table = Table(
+        title="MCP Servers",
+        border_style="blue",
+        box=box.SIMPLE,
+        header_style="bold blue",
+        padding=(0, 1),
+    )
+    table.add_column("Server", style="bold yellow", no_wrap=True)
+    table.add_column("Type", style="dim", no_wrap=True)
+    table.add_column("Tools", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Detail", style="dim", max_width=50)
+
+    for s in servers:
+        if s["disabled"]:
+            status = "[red]disabled[/red]"
+            tools = "[dim]-[/dim]"
+        else:
+            status = "[green]enabled[/green]"
+            tools = str(s["tool_count"])
+        table.add_row(s["name"], s["type"], tools, status, s["detail"])
+
+    console.print(table)
+    console.print("  [dim]Tip: /mcp add, /mcp disable <name>, /mcp enable <name>, /mcp reload[/dim]")
+    console.print()
+
+
+def print_cron_jobs(jobs: list) -> None:
+    """Print cron job table."""
+    table = Table(
+        title="Scheduled Tasks",
+        border_style="magenta",
+        box=box.SIMPLE,
+        header_style="bold magenta",
+        padding=(0, 1),
+    )
+    table.add_column("ID", style="bold yellow", no_wrap=True, width=8)
+    table.add_column("Type", style="cyan", no_wrap=True, width=6)
+    table.add_column("Spec", style="dim", width=16)
+    table.add_column("Next Run", style="green", width=18)
+    table.add_column("Status", width=8)
+    table.add_column("Task", max_width=40)
+
+    for job in jobs:
+        status = "[red]paused[/red]" if job.paused else "[green]active[/green]"
+        next_run = job.next_run[:16].replace("T", " ") if job.next_run else "-"
+        type_val = job.type.value if hasattr(job.type, "value") else str(job.type)
+        table.add_row(
+            job.id,
+            type_val,
+            job.spec,
+            next_run,
+            status,
+            job.task[:40],
+        )
+    console.print(table)
+    console.print()
+
+
 def print_help() -> None:
     table = Table(
         show_header=True,
@@ -371,13 +468,18 @@ def print_help() -> None:
         ("/context", "Show context window usage"),
         ("/agents", "List loaded agents"),
         ("/skills", "List loaded skills"),
+        ("/tools", "List MCP tools by server"),
+        ("/call [srv] <tool>", "Call MCP tool directly: /call github get_me"),
+        ("/mcp [cmd]", "MCP servers (add/remove/disable/enable/reload)"),
         ("/projects", "Show project registry"),
-        ("/sessions", "List saved sessions"),
+        ("/sessions [id]", "List sessions or switch to one"),
         ("/plan", "Show current task plan with progress"),
         ("/profile [name]", "Show/switch model profile (quality/balanced/budget)"),
+        ("/heartbeat [test]", "Heartbeat status or force a tick"),
+        ("/cron [cmd]", "Scheduled tasks (list/add/remove/pause/resume)"),
         ("/voice on|off", "Toggle TTS"),
         ("/model <name>", "Switch model"),
-        ("/thread [id]", "Show or switch thread"),
+        ("ESC", "Abort running agent"),
         ("exit", "End session"),
         ("", ""),
         ("octo init", "Run setup wizard"),
@@ -440,7 +542,8 @@ async def styled_input_async() -> str:
             bottom_toolbar=HTML(
                 " <b>Enter</b> send  "
                 "<b>Esc+Enter</b> newline  "
-                "<b>Tab</b> complete"
+                "<b>Tab</b> complete  "
+                "<b>Esc</b> abort"
             ),
         )
         return text.strip()

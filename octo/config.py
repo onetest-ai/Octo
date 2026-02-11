@@ -32,6 +32,7 @@ MEMORY_DIR = OCTO_DIR / "memory"
 SKILLS_DIR = OCTO_DIR / "skills"
 AGENTS_DIR = OCTO_DIR / "agents"
 AGENTS_DIR.mkdir(exist_ok=True)
+OAUTH_DIR = OCTO_DIR / "oauth"  # created on demand by FileTokenStorage
 
 # --- Auth ---
 # Prefer ANTHROPIC_API_KEY; fall back to CLAUDE_CODE_OAUTH_TOKEN
@@ -64,6 +65,13 @@ LOW_TIER_MODEL = os.getenv("LOW_TIER_MODEL", "claude-haiku-4-5-20251001")
 
 # --- Project state ---
 STATE_PATH = OCTO_DIR / "STATE.md"
+PLANS_DIR = OCTO_DIR / "plans"
+PLANS_DIR.mkdir(exist_ok=True)
+
+# --- Research workspace ---
+# Shared workspace for agent research and temporary files, organized by date.
+RESEARCH_WORKSPACE = OCTO_DIR / "workspace"
+RESEARCH_WORKSPACE.mkdir(exist_ok=True)
 
 # --- Middleware ---
 # Tool result truncation — max chars before a single tool result is cut
@@ -133,6 +141,38 @@ if _extra:
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_OWNER_ID = os.getenv("TELEGRAM_OWNER_ID", "")
+
+# --- Heartbeat ---
+HEARTBEAT_INTERVAL = os.getenv("HEARTBEAT_INTERVAL", "30m")
+HEARTBEAT_ACTIVE_START = os.getenv("HEARTBEAT_ACTIVE_HOURS_START", "08:00")
+HEARTBEAT_ACTIVE_END = os.getenv("HEARTBEAT_ACTIVE_HOURS_END", "22:00")
+HEARTBEAT_PATH = PERSONA_DIR / "HEARTBEAT.md"
+
+# --- Cron ---
+CRON_PATH = OCTO_DIR / "cron.json"
+
+
+def _parse_heartbeat_interval(spec: str) -> int:
+    """Parse heartbeat interval like '30m', '1h', '60s' into seconds."""
+    import re as _re
+    m = _re.match(r"^(\d+)\s*(s|m|h)$", spec.strip(), _re.I)
+    if not m:
+        return 1800  # default 30 minutes
+    val = int(m.group(1))
+    unit = m.group(2).lower()
+    return val * {"s": 1, "m": 60, "h": 3600}[unit]
+
+
+def _parse_time_str(spec: str):
+    """Parse time string like '08:00' into datetime.time."""
+    from datetime import time as _time
+    parts = spec.strip().split(":")
+    return _time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+
+
+HEARTBEAT_INTERVAL_SECONDS = _parse_heartbeat_interval(HEARTBEAT_INTERVAL)
+HEARTBEAT_ACTIVE_START_TIME = _parse_time_str(HEARTBEAT_ACTIVE_START)
+HEARTBEAT_ACTIVE_END_TIME = _parse_time_str(HEARTBEAT_ACTIVE_END)
 
 # --- Voice ---
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")

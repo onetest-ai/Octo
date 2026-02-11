@@ -23,14 +23,24 @@ from octo.tools import BUILTIN_TOOLS
 
 # --- Persistent todo tools ------------------------------------------------
 
-_PLAN_PATH = OCTO_DIR / "plan.json"
+from octo.config import PLANS_DIR
 
 
 def _load_todos_from_disk() -> list[dict[str, str]]:
-    """Load todos from .octo/plan.json if it exists."""
-    if _PLAN_PATH.is_file():
+    """Load the most recent plan from .octo/plans/plan_*.json."""
+    plan_files = sorted(PLANS_DIR.glob("plan_*.json"), reverse=True)
+    for pf in plan_files:
         try:
-            data = json.loads(_PLAN_PATH.read_text(encoding="utf-8"))
+            data = json.loads(pf.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            continue
+    # Migration: check legacy .octo/plan.json
+    legacy = OCTO_DIR / "plan.json"
+    if legacy.is_file():
+        try:
+            data = json.loads(legacy.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return data
         except (json.JSONDecodeError, TypeError):
@@ -39,8 +49,10 @@ def _load_todos_from_disk() -> list[dict[str, str]]:
 
 
 def _save_todos_to_disk(todos: list[dict[str, str]]) -> None:
-    """Persist todos to .octo/plan.json."""
-    _PLAN_PATH.write_text(json.dumps(todos, indent=2) + "\n", encoding="utf-8")
+    """Persist todos to .octo/plans/plan_<datetime>.json."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = PLANS_DIR / f"plan_{ts}.json"
+    path.write_text(json.dumps(todos, indent=2) + "\n", encoding="utf-8")
 
 
 _todos: list[dict[str, str]] = _load_todos_from_disk()
@@ -189,6 +201,54 @@ def update_long_term_memory(content: str) -> str:
     # Count approximate size for feedback
     lines = content.strip().split("\n")
     return f"MEMORY.md updated ({len(lines)} lines)"
+
+
+# --- Telegram file sending ------------------------------------------------
+
+# Module-level ref set by cli.py after Telegram transport is initialized
+_telegram_transport = None
+
+
+def set_telegram_transport(tg) -> None:
+    """Register the TelegramTransport instance for file-sending tools."""
+    global _telegram_transport
+    _telegram_transport = tg
+
+
+@tool
+async def send_file(file_path: str, caption: str = "") -> str:
+    """Send a file to the user via Telegram.
+
+    Use this when the user asks for a research report, document, or any file
+    that an agent has produced. The file is sent as a Telegram document
+    attachment — much better than pasting long content inline.
+
+    Common file locations:
+    - Research workspace: .octo/workspace/<date>/<filename>
+    - Use the Glob or Read tool first to find the file if unsure of the path.
+
+    Args:
+        file_path: Path to the file to send (absolute or relative to workspace).
+        caption: Short description shown with the file (1-2 sentences).
+    """
+    import os
+    from octo.config import WORKSPACE
+
+    # Resolve relative paths against workspace root
+    if not os.path.isabs(file_path):
+        file_path = str(WORKSPACE / file_path)
+
+    if not os.path.isfile(file_path):
+        return f"File not found: {file_path}"
+
+    if _telegram_transport is None:
+        return "Telegram transport not available. The file exists at: " + file_path
+
+    sent = await _telegram_transport.send_document(file_path, caption=caption)
+    if sent:
+        filename = os.path.basename(file_path)
+        return f"File '{filename}' sent to Telegram successfully."
+    return f"Failed to send file to Telegram. The file exists at: {file_path}"
 
 
 # --- Context window tracking ----------------------------------------------
@@ -422,14 +482,26 @@ def _build_deep_agents(
     MCP tools are resolved from each agent's tools: list in AGENT.md,
     same as regular agents. If no tools specified, no extra MCP tools added.
 
-    Each deep agent gets a persistent FilesystemBackend workspace at
-    .octo/agents/<name>/workspace/ for notes, drafts, and research files.
+    Each deep agent gets a shared FilesystemBackend workspace at
+    .octo/workspace/<date>/ for research, notes, and temporary files.
     The supervisor's checkpointer handles state persistence for resume.
     """
     from deepagents import create_deep_agent
     from deepagents.backends import FilesystemBackend
 
+    from octo.config import RESEARCH_WORKSPACE
+
     mcp_by_name = {t.name: t for t in mcp_tools}
+
+    # Shared date-based workspace for all deep agents
+    today = date.today().isoformat()
+    workspace_dir = RESEARCH_WORKSPACE / today
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    backend = FilesystemBackend(
+        root_dir=str(workspace_dir),
+        virtual_mode=True,
+    )
 
     deep_workers = []
     for cfg in agent_configs:
@@ -440,14 +512,6 @@ def _build_deep_agents(
 
         # Resolve MCP tools from agent's tools: list
         agent_tools = [mcp_by_name[n] for n in cfg.tools if n in mcp_by_name] if cfg.tools else []
-
-        # Persistent workspace — notes, drafts, research files survive restarts
-        workspace_dir = AGENTS_DIR / cfg.name / "workspace"
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-        backend = FilesystemBackend(
-            root_dir=str(workspace_dir),
-            virtual_mode=True,
-        )
 
         agent = create_deep_agent(
             model=model,
@@ -560,6 +624,30 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
         "- The user asks to pause or switch context"
     )
 
+    parts.append(
+        "## File Sharing\n\n"
+        "Use `send_file` to send files to the user via Telegram. This is much better "
+        "than pasting long content inline. Use it when:\n"
+        "- The user asks for a research report, analysis, or document\n"
+        "- An agent has produced a file (research workspace: `.octo/workspace/<date>/`)\n"
+        "- The content is too long to include in a message\n\n"
+        "If Telegram is not available, the tool returns the local file path instead."
+    )
+
+    parts.append(
+        "## Task Scheduling\n\n"
+        "You can schedule tasks to run later using `schedule_task`. Use this when:\n"
+        "- The user says 'remind me in X hours/minutes'\n"
+        "- The user wants periodic checks ('check every morning')\n"
+        "- A task should run at a specific time\n\n"
+        "Schedule types:\n"
+        "- `at`: One-shot. Spec examples: 'in 2h', '15:00', '2024-02-11T15:00Z'\n"
+        "- `every`: Recurring interval. Spec examples: '30m', '2h', '1d'\n"
+        "- `cron`: Cron expression. Spec examples: '0 9 * * MON-FRI'\n\n"
+        "Set `isolated=True` for tasks that don't need conversation context.\n"
+        "Results are delivered to the user via Telegram and CLI."
+    )
+
     # Project workers
     if PROJECTS:
         proj_lines = []
@@ -644,17 +732,79 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
     supervisor_model = make_model(tier=profile.get("supervisor", "default"))
     prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents)
 
-    # Wrap supervisor tools in a ToolNode with handle_tool_errors=True so that
-    # MCP tool errors (e.g. Playwright stale refs) are returned as messages
-    # instead of crashing the graph.  create_supervisor does NOT accept middleware,
-    # so this is the only way to get error handling at the supervisor level.
+    # Build schedule_task tool (cron scheduling)
+    from octo.heartbeat import make_schedule_task_tool
+    schedule_task = make_schedule_task_tool()
+
+    # Wrap supervisor tools in a TruncatingToolNode that:
+    # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
+    # 2. Truncates oversized results (e.g. search_code returning 73K chars)
+    #    before they enter the graph state and blow the context window.
+    #    create_supervisor does NOT accept middleware, so this is the only
+    #    way to get both error handling and result truncation at supervisor level.
+    from octo.middleware import TRUNCATION_NOTICE
+    from octo.config import TOOL_RESULT_LIMIT
     from langgraph.prebuilt import ToolNode
+
+    class TruncatingToolNode(ToolNode):
+        """ToolNode that truncates oversized results before they enter state."""
+
+        def _truncate_content(self, content):
+            if isinstance(content, str) and len(content) > TOOL_RESULT_LIMIT:
+                notice = TRUNCATION_NOTICE.format(
+                    original=len(content), limit=TOOL_RESULT_LIMIT,
+                )
+                return content[:TOOL_RESULT_LIMIT] + notice
+            if isinstance(content, list):
+                total = sum(len(str(p)) for p in content)
+                if total > TOOL_RESULT_LIMIT:
+                    truncated = []
+                    running = 0
+                    for part in content:
+                        part_len = len(str(part))
+                        if running + part_len > TOOL_RESULT_LIMIT:
+                            # Try to truncate the text inside a dict part
+                            if isinstance(part, dict) and "text" in part:
+                                remaining = TOOL_RESULT_LIMIT - running
+                                if remaining > 200:
+                                    trunc_part = dict(part)
+                                    trunc_part["text"] = part["text"][:remaining] + TRUNCATION_NOTICE.format(
+                                        original=total, limit=TOOL_RESULT_LIMIT,
+                                    )
+                                    truncated.append(trunc_part)
+                            break
+                        truncated.append(part)
+                        running += part_len
+                    if not truncated:
+                        return str(content)[:TOOL_RESULT_LIMIT] + TRUNCATION_NOTICE.format(
+                            original=total, limit=TOOL_RESULT_LIMIT,
+                        )
+                    return truncated
+            return content
+
+        def _run_one(self, call, input_type, tool_runtime):
+            result = super()._run_one(call, input_type, tool_runtime)
+            if hasattr(result, "content"):
+                truncated = self._truncate_content(result.content)
+                if truncated is not result.content:
+                    result = result.model_copy(update={"content": truncated})
+            return result
+
+        async def _arun_one(self, call, input_type, tool_runtime):
+            result = await super()._arun_one(call, input_type, tool_runtime)
+            if hasattr(result, "content"):
+                truncated = self._truncate_content(result.content)
+                if truncated is not result.content:
+                    result = result.model_copy(update={"content": truncated})
+            return result
+
     supervisor_tool_list = (
         list(mcp_tools) + list(BUILTIN_TOOLS)
         + [write_todos, read_todos, update_state_md, use_skill,
-           write_memory, read_memories, update_long_term_memory]
+           write_memory, read_memories, update_long_term_memory,
+           schedule_task, send_file]
     )
-    supervisor_tools = ToolNode(supervisor_tool_list, handle_tool_errors=True)
+    supervisor_tools = TruncatingToolNode(supervisor_tool_list, handle_tool_errors=True)
 
     from octo.models import resolve_model_name
     hook = _build_pre_model_hook(resolve_model_name())

@@ -37,6 +37,7 @@ async def run_doctor(*, fix: bool = False, json_output: bool = False) -> None:
         _check_mcp_config(),
         _check_agent_dirs(),
         _check_database(),
+        _check_oauth_tokens(),
     ]
 
     if json_output:
@@ -249,6 +250,45 @@ def _check_database() -> CheckResult:
     size = DB_PATH.stat().st_size
     size_str = f"{size / 1024:.0f} KB" if size < 1_000_000 else f"{size / 1_048_576:.1f} MB"
     return CheckResult("SQLite database", True, f"Found ({size_str})")
+
+
+def _check_oauth_tokens() -> CheckResult:
+    from octo.config import MCP_CONFIG_PATH, OAUTH_DIR
+    from octo.oauth.storage import FileTokenStorage
+
+    if not MCP_CONFIG_PATH.is_file():
+        return CheckResult("OAuth tokens", True, "No MCP config (skipped)")
+
+    try:
+        data = json.loads(MCP_CONFIG_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return CheckResult("OAuth tokens", True, "Could not read MCP config (skipped)")
+
+    servers = data.get("mcpServers", {})
+    auth_servers = {name: spec for name, spec in servers.items() if spec.get("auth")}
+
+    if not auth_servers:
+        return CheckResult("OAuth tokens", True, "No servers require OAuth")
+
+    authenticated = []
+    missing = []
+    for name in auth_servers:
+        storage = FileTokenStorage(name, OAUTH_DIR)
+        if storage.has_tokens():
+            authenticated.append(name)
+        else:
+            missing.append(name)
+
+    if missing:
+        return CheckResult(
+            "OAuth tokens",
+            True,  # warn, not fail — tokens can be acquired later
+            f"{len(authenticated)}/{len(auth_servers)} authenticated"
+            + (f" (missing: {', '.join(missing)})" if missing else ""),
+            f"Run `octo auth login <server>` for: {', '.join(missing)}",
+        )
+
+    return CheckResult("OAuth tokens", True, f"All {len(auth_servers)} server(s) authenticated")
 
 
 # ── Output ──────────────────────────────────────────────────────────────
