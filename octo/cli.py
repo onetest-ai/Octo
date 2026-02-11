@@ -163,10 +163,10 @@ async def _chat_loop(
             ui.print_status("Voice enabled", "green")
 
         # Setup input with slash command completion
-        slash_cmds = ["/help", "/clear", "/compact", "/context", "/agents", "/skills", "/tools",
-                      "/call", "/projects", "/sessions", "/plan", "/profile", "/voice", "/model",
-                      "/mcp", "/cron", "/heartbeat", "exit", "quit"]
-        slash_cmds += [f"/{s.name}" for s in skills]
+        _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
+                            "/tools", "/call", "/projects", "/sessions", "/plan", "/profile",
+                            "/voice", "/model", "/mcp", "/cron", "/heartbeat", "exit", "quit"]
+        slash_cmds = _BASE_SLASH_CMDS + [f"/{s.name}" for s in skills]
         ui.setup_input(slash_cmds)
 
         # Callback handler — shared between CLI and Telegram so both show tool traces
@@ -297,15 +297,18 @@ async def _chat_loop(
                         # Update proactive runners with new graph
                         heartbeat._app = app
                         cron_scheduler._app = app
+                        # Refresh tab-completion with new skill names
+                        ui.setup_input(_BASE_SLASH_CMDS + [f"/{s.name}" for s in skills])
 
                     if sub == "":
                         ui.print_mcp_status(mcp_get_status(mcp_tools_by_server))
                     elif sub == "reload":
-                        ui.print_info("Reloading MCP servers...")
+                        ui.print_info("Reloading MCP servers and skills...")
                         await _rebuild_graph()
                         ui.print_info(
                             f"Reloaded: {len(mcp_tools)} tools from "
-                            f"{len(mcp_tools_by_server)} server(s)"
+                            f"{len(mcp_tools_by_server)} server(s), "
+                            f"{len(skills)} skills"
                         )
                     elif sub == "add":
                         name = mcp_add_wizard()
