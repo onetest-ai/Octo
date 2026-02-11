@@ -51,8 +51,18 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 
+# --- GitHub Models ---
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+# Base URLs — override if using a custom proxy or Azure AI Foundry resource
+GITHUB_MODELS_BASE_URL = os.getenv(
+    "GITHUB_MODELS_BASE_URL", "https://models.inference.ai.azure.com"
+)
+GITHUB_MODELS_ANTHROPIC_BASE_URL = os.getenv(
+    "GITHUB_MODELS_ANTHROPIC_BASE_URL", "https://models.inference.ai.azure.com"
+)
+
 # --- Provider override (optional) ---
-# Auto-detected from model name if not set. Values: anthropic, bedrock, openai, azure
+# Auto-detected from model name if not set. Values: anthropic, bedrock, openai, azure, github
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")
 
 # --- Model tiers ---

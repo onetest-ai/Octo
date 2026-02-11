@@ -78,6 +78,7 @@ def _check_provider_credentials() -> CheckResult:
         AWS_REGION,
         AZURE_OPENAI_API_KEY,
         AZURE_OPENAI_ENDPOINT,
+        GITHUB_TOKEN,
         OPENAI_API_KEY,
     )
 
@@ -95,6 +96,8 @@ def _check_provider_credentials() -> CheckResult:
         providers.append("openai")
     if AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY:
         providers.append("azure")
+    if GITHUB_TOKEN:
+        providers.append("github")
 
     if warnings and not providers:
         return CheckResult(
@@ -128,6 +131,7 @@ async def _check_llm_connectivity() -> CheckResult:
             AZURE_OPENAI_API_KEY,
             AZURE_OPENAI_API_VERSION,
             AZURE_OPENAI_ENDPOINT,
+            GITHUB_TOKEN,
             LOW_TIER_MODEL,
             OPENAI_API_KEY,
         )
@@ -146,6 +150,7 @@ async def _check_llm_connectivity() -> CheckResult:
             "AZURE_OPENAI_API_KEY": AZURE_OPENAI_API_KEY,
             "AZURE_OPENAI_ENDPOINT": AZURE_OPENAI_ENDPOINT,
             "AZURE_OPENAI_API_VERSION": AZURE_OPENAI_API_VERSION,
+            "GITHUB_TOKEN": GITHUB_TOKEN,
         }
 
         ok, msg = validate_provider(provider, creds, LOW_TIER_MODEL)

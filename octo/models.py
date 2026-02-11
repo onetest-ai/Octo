@@ -29,6 +29,9 @@ from octo.config import (
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_API_VERSION,
+    GITHUB_TOKEN,
+    GITHUB_MODELS_BASE_URL,
+    GITHUB_MODELS_ANTHROPIC_BASE_URL,
     LLM_PROVIDER,
     DEFAULT_MODEL,
     HIGH_TIER_MODEL,
@@ -46,6 +49,10 @@ def _detect_provider(model_name: str) -> str:
     """
     if LLM_PROVIDER:
         return LLM_PROVIDER
+
+    # GitHub Models — model names prefixed with "github/"
+    if model_name.startswith("github/"):
+        return "github"
 
     # Bedrock model IDs contain region prefix like "eu.anthropic." or "us.anthropic."
     if ".anthropic." in model_name or ".amazon." in model_name or ".meta." in model_name:
@@ -70,6 +77,8 @@ def _detect_provider(model_name: str) -> str:
         return "openai"
     if ANTHROPIC_API_KEY:
         return "anthropic"
+    if GITHUB_TOKEN:
+        return "github"
 
     return "anthropic"
 
@@ -148,11 +157,59 @@ def _make_azure(name: str) -> BaseChatModel:
     )
 
 
+# --- GitHub Models ---
+# Claude model names on GitHub use Anthropic's native API; everything else
+# goes through the OpenAI-compatible chat/completions endpoint.
+_GITHUB_CLAUDE_PREFIXES = ("claude-", "anthropic/claude-")
+
+
+def _is_github_claude(model: str) -> bool:
+    """Check if a GitHub Models model name is a Claude variant."""
+    return any(model.startswith(p) for p in _GITHUB_CLAUDE_PREFIXES)
+
+
+def _make_github(name: str) -> BaseChatModel:
+    """Create a LangChain model via GitHub Models.
+
+    Supports two API formats:
+      • Claude models   → ChatAnthropic  (Anthropic Messages API)
+      • Everything else  → ChatOpenAI     (OpenAI Chat Completions API)
+
+    Model names can be prefixed with "github/" — the prefix is stripped
+    before calling the API.  Examples:
+      github/gpt-4o              → ChatOpenAI("gpt-4o")
+      github/openai/gpt-4.1      → ChatOpenAI("openai/gpt-4.1")
+      github/claude-sonnet-4-5-20250929 → ChatAnthropic("claude-sonnet-4-5-20250929")
+      github/anthropic/claude-sonnet-4  → ChatAnthropic("anthropic/claude-sonnet-4")
+    """
+    # Strip "github/" prefix if present
+    model_id = name.removeprefix("github/")
+
+    if _is_github_claude(model_id):
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=model_id,
+            api_key=GITHUB_TOKEN,
+            base_url=GITHUB_MODELS_ANTHROPIC_BASE_URL,
+            max_tokens=8192,
+        )
+    else:
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_id,
+            api_key=GITHUB_TOKEN,
+            base_url=GITHUB_MODELS_BASE_URL,
+        )
+
+
 _PROVIDERS = {
     "anthropic": _make_anthropic,
     "bedrock": _make_bedrock,
     "openai": _make_openai,
     "azure": _make_azure,
+    "github": _make_github,
 }
 
 

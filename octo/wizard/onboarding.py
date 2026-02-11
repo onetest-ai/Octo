@@ -39,6 +39,11 @@ _DEFAULT_MODELS: dict[str, dict[str, str]] = {
         "HIGH_TIER_MODEL": "gpt-4o",
         "LOW_TIER_MODEL": "gpt-4o-mini",
     },
+    "github": {
+        "DEFAULT_MODEL": "github/openai/gpt-4.1",
+        "HIGH_TIER_MODEL": "github/openai/gpt-4.1",
+        "LOW_TIER_MODEL": "github/openai/gpt-4o-mini",
+    },
 }
 
 _PROVIDERS = [
@@ -46,6 +51,7 @@ _PROVIDERS = [
     ("2", "bedrock", "AWS Bedrock", "Uses AWS credentials — supports Claude, Llama, etc."),
     ("3", "openai", "OpenAI", "GPT-4o, o1, o3 — requires OPENAI_API_KEY"),
     ("4", "azure", "Azure OpenAI", "Azure-hosted models — requires endpoint + key"),
+    ("5", "github", "GitHub Models", "GPT, Claude, Mistral, Llama via GitHub PAT"),
 ]
 
 _MCP_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -190,7 +196,7 @@ def _select_provider(preselected: str | None) -> str:
         table.add_row(num, name, desc)
     console.print(table)
 
-    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4"], default="1")
+    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4", "5"], default="1")
     return {p[0]: p[1] for p in _PROVIDERS}[choice]
 
 
@@ -245,6 +251,15 @@ def _collect_credentials(provider: str) -> dict[str, str]:
             "  API version",
             default=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
         )
+
+    elif provider == "github":
+        existing = os.environ.get("GITHUB_TOKEN", "")
+        if existing:
+            console.print("  [dim]Using GITHUB_TOKEN from environment[/dim]")
+            creds["GITHUB_TOKEN"] = existing
+        else:
+            console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
+            creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Personal Access Token", password=True)
 
     return creds
 
@@ -376,7 +391,7 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
     sections: list[tuple[str, str, list[str]]] = [
         (
             "LLM Provider",
-            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure",
+            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github",
             ["LLM_PROVIDER"],
         ),
         ("Anthropic", "Direct Anthropic API access", ["ANTHROPIC_API_KEY"]),
@@ -386,6 +401,11 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             "Azure OpenAI",
             "Azure-hosted OpenAI models",
             ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_VERSION"],
+        ),
+        (
+            "GitHub Models",
+            "GPT, Claude, Mistral, Llama via GitHub PAT (models:read scope)",
+            ["GITHUB_TOKEN", "GITHUB_MODELS_BASE_URL", "GITHUB_MODELS_ANTHROPIC_BASE_URL"],
         ),
         (
             "Model Tiers",

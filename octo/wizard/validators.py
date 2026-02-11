@@ -17,6 +17,7 @@ def validate_provider(
             "bedrock": _validate_bedrock,
             "openai": _validate_openai,
             "azure": _validate_azure,
+            "github": _validate_github,
         }.get(provider)
         if fn is None:
             return False, f"Unknown provider: {provider}"
@@ -80,3 +81,18 @@ def _validate_azure(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
     )
     llm.invoke("Say 'ok'")
     return True, f"Connected to Azure OpenAI ({model})"
+
+
+def _validate_github(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
+    from langchain_openai import ChatOpenAI
+
+    # Strip github/ prefix for validation; default to a cheap model
+    model = (model_name or "github/openai/gpt-4o-mini").removeprefix("github/")
+    llm = ChatOpenAI(
+        model=model,
+        api_key=creds.get("GITHUB_TOKEN", ""),
+        base_url="https://models.inference.ai.azure.com",
+        max_tokens=16,
+    )
+    llm.invoke("Say 'ok'")
+    return True, f"Connected to GitHub Models ({model})"

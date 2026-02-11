@@ -32,3 +32,4 @@ __pycache__/
 .octo/workspace/**.md
 .octo/workspace/**.yaml
 .octo/cron.json
+.octo/plans
