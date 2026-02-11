@@ -862,8 +862,16 @@ async def _chat_loop(
                         continue
 
                 # --- Invoke graph ---
+                # Process file attachments (detect paths, copy to uploads, inline text)
+                from octo.attachments import process_user_input as _process_attachments
+                msg_content, uploaded = _process_attachments(user_input)
+                if uploaded:
+                    names = [p.rsplit("/", 1)[-1] for p in uploaded]
+                    ui.print_info(f"Attached: {', '.join(names)}")
+
                 # Update session with latest user message preview
-                save_session(thread_id, preview=user_input, model=active_model)
+                preview_text = user_input if isinstance(msg_content, str) else user_input
+                save_session(thread_id, preview=preview_text, model=active_model)
 
                 try:
                     # Start thinking spinner — callback will stop it on first tool call
@@ -889,7 +897,7 @@ async def _chat_loop(
                             invoke_task = asyncio.create_task(
                                 invoke_with_retry(
                                     app,
-                                    {"messages": [HumanMessage(content=user_input)]},
+                                    {"messages": [HumanMessage(content=msg_content)]},
                                     config,
                                     on_retry=_on_retry,
                                 )

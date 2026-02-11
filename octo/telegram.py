@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from langchain_core.messages import HumanMessage
@@ -238,8 +240,14 @@ class TelegramTransport:
         except Exception:
             pass  # silently stop if chat action fails
 
-    async def _invoke_graph(self, chat_id: int, user_text: str, sender_name: str = "") -> str:
-        """Send user text through the graph with typing indicator."""
+    async def _invoke_graph(self, chat_id: int, user_content: str | list, sender_name: str = "") -> str:
+        """Send user content through the graph with typing indicator.
+
+        Args:
+            chat_id: Telegram chat ID (for typing indicator).
+            user_content: String or list of content blocks (multimodal).
+            sender_name: Display name for channel tagging.
+        """
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(self._send_typing(chat_id, stop_typing))
 
@@ -249,9 +257,14 @@ class TelegramTransport:
                 config["callbacks"] = self.callbacks
 
             # Tag message with channel metadata so supervisor can adapt formatting
-            tagged_text = user_text
-            if sender_name:
-                tagged_text = f"[Channel: Telegram | User: {sender_name}]\n\n{user_text}"
+            if isinstance(user_content, str):
+                tagged = f"[Channel: Telegram | User: {sender_name}]\n\n{user_content}" if sender_name else user_content
+            else:
+                # Multimodal — prepend tag to the first text block
+                tagged = list(user_content)
+                if tagged and tagged[0].get("type") == "text" and sender_name:
+                    tagged[0] = dict(tagged[0])
+                    tagged[0]["text"] = f"[Channel: Telegram | User: {sender_name}]\n\n{tagged[0]['text']}"
 
             from octo.retry import invoke_with_retry
 
@@ -260,7 +273,7 @@ class TelegramTransport:
             try:
                 result = await invoke_with_retry(
                     self.graph_app,
-                    {"messages": [HumanMessage(content=tagged_text)]},
+                    {"messages": [HumanMessage(content=tagged)]},
                     config,
                 )
             finally:
@@ -313,6 +326,97 @@ class TelegramTransport:
         if user:
             return user.full_name or user.username or str(user.id)
         return "Unknown"
+
+    async def _handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming document/photo attachments."""
+        if not update.message:
+            return
+
+        sender_id = str(update.message.from_user.id) if update.message.from_user else ""
+        if not _is_authorized(sender_id):
+            await update.message.reply_text("Not authorized. Ask the owner to run /authorize.")
+            return
+
+        sender = self._sender_name(update)
+        caption = update.message.caption or ""
+
+        # Determine file to download
+        if update.message.document:
+            file_obj = update.message.document
+            file_name = file_obj.file_name or "document"
+        elif update.message.photo:
+            # Photos come as a list of sizes — pick the largest
+            file_obj = update.message.photo[-1]
+            file_name = "photo.jpg"
+        else:
+            return
+
+        logger.info("Telegram file from %s: %s", sender, file_name)
+
+        if self.on_message:
+            self.on_message(f"[{sender}] (file) {file_name}: {caption or '(no caption)'}")
+
+        try:
+            status_msg = await update.message.reply_text("Processing file...")
+
+            # Download to uploads
+            from octo.attachments import copy_to_uploads, UPLOADS_DIR, _IMAGE_EXTENSIONS, _BINARY_EXTENSIONS
+            import tempfile
+
+            tg_file = await context.bot.get_file(file_obj.file_id)
+            ext = Path(file_name).suffix.lower()
+
+            # Reject binaries
+            if ext in _BINARY_EXTENSIONS:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                await update.message.reply_text(f"Binary files ({ext}) are not supported.")
+                return
+
+            # Download to temp, then copy to uploads
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp_path = tmp.name
+            await tg_file.download_to_drive(tmp_path)
+            dest = copy_to_uploads(tmp_path, filename=file_name)
+            os.unlink(tmp_path)
+
+            # Build message with attachment reference
+            if ext in _IMAGE_EXTENSIONS:
+                import base64 as _b64
+                import mimetypes as _mt
+                with open(dest, "rb") as f:
+                    data = _b64.b64encode(f.read()).decode("utf-8")
+                mime = _mt.guess_type(dest)[0] or "image/jpeg"
+                user_content = [
+                    {"type": "text", "text": caption or "What's in this image?"},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}},
+                ]
+            else:
+                user_content = (
+                    f"{caption or 'Process the attached file.'}\n\n"
+                    f"[Attached: `{dest}` ({file_name}) — "
+                    f"use appropriate tools or skills to read this file]"
+                )
+
+            try:
+                await status_msg.edit_text("Processing...")
+            except Exception:
+                pass
+
+            response_text = await self._invoke_graph(
+                update.message.chat_id, user_content, sender_name=sender,
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await self._reply(update, response_text)
+
+        except Exception:
+            logger.exception("Error handling Telegram document")
+            await update.message.reply_text("Something went wrong. Check the console.")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
@@ -542,6 +646,8 @@ class TelegramTransport:
         self._app.add_handler(CommandHandler("authorize", self._handle_authorize))
         self._app.add_handler(CommandHandler("revoke", self._handle_revoke))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
+        self._app.add_handler(MessageHandler(filters.Document.ALL, self._handle_document))
+        self._app.add_handler(MessageHandler(filters.PHOTO, self._handle_document))
         self._app.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
 
         await self._app.initialize()
