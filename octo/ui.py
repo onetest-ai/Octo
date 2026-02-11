@@ -542,12 +542,20 @@ _session: PromptSession | None = None
 
 
 def _build_key_bindings() -> KeyBindings:
-    """Key bindings: Enter submits, Escape+Enter inserts newline."""
+    """Key bindings: Enter submits; Ctrl+Enter / Esc+Enter insert newline.
+
+    macOS terminals send backslash (0x5c) + carriage return (0x0d) for
+    Ctrl+Enter.  We bind that two-key sequence to newline insertion.
+    """
     kb = KeyBindings()
 
     @kb.add("escape", "enter")
-    def _newline(event):
-        """Insert newline on Escape+Enter."""
+    def _esc_newline(event):
+        event.current_buffer.insert_text("\n")
+
+    @kb.add("\\", "c-m", eager=True)
+    def _ctrl_newline(event):
+        """Ctrl+Enter → newline (macOS sends backslash + CR)."""
         event.current_buffer.insert_text("\n")
 
     return kb
@@ -584,7 +592,7 @@ async def styled_input_async() -> str:
     def _toolbar():
         keys = (
             " <b>Enter</b> send  "
-            "<b>Esc+Enter</b> newline  "
+            "<b>Ctrl+Enter</b> newline  "
             "<b>Tab</b> complete  "
             "<b>Esc</b> abort"
         )
