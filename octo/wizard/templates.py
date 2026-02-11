@@ -85,17 +85,6 @@ def _memory_template(user_name: str = "", **_kw: str) -> str:
 - Discuss before doing"""
 
 
-def _tools_template(**_kw: str) -> str:
-    return """\
-# Tools Notes
-
-Add environment-specific notes here (SSH hosts, service URLs, API quirks, etc.).
-
----
-
-_This is your cheat sheet. Add whatever helps you do your job._"""
-
-
 def _heartbeat_template(**_kw: str) -> str:
     return """\
 # HEARTBEAT.md
@@ -116,6 +105,5 @@ PERSONA_TEMPLATES: dict[str, Callable[..., str]] = {
     "USER.md": _user_template,
     "AGENTS.md": _agents_template,
     "MEMORY.md": _memory_template,
-    "TOOLS.md": _tools_template,
     "HEARTBEAT.md": _heartbeat_template,
 }

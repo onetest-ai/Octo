@@ -44,6 +44,23 @@ A supervisor agent routes user requests to the right specialist. Three types of 
 - **Standard agents** — loaded from AGENT.md files with MCP + builtin tools
 - **Deep research agents** — powered by `deepagents` with persistent workspaces, planning, and summarization middleware
 
+### Agent Creation Wizard
+
+Create new agents interactively from chat:
+
+```
+/create-agent
+```
+
+The wizard guides you through:
+1. **Name & description** — validated format, collision detection
+2. **Agent type** — standard (tools + prompt) or deep research (persistent workspace)
+3. **Tool selection** — numbered table of all available tools (built-in + MCP), with shortcuts (`builtin`, `all`, `none`)
+4. **Purpose description** — free-text description of what the agent should do
+5. **AI generation** — LLM generates a full system prompt based on your description, selected tools, and examples from existing agents
+
+The generated AGENT.md is previewed before saving. Agents are immediately available after graph rebuild.
+
 ### Proactive AI
 
 Inspired by OpenClaw's heartbeat mechanism. Octo can reach out first — no user prompt needed.
@@ -331,8 +348,10 @@ GitHub Models auto-routes to the right LangChain class based on the model name:
 | `/profile [name]` | Show/switch model profile |
 | `/heartbeat [test]` | Heartbeat status or force a tick |
 | `/cron [cmd]` | Scheduled tasks (list/add/remove/pause/resume) |
+| `/create-agent` | AI-assisted agent creation wizard |
 | `/voice on\|off` | Toggle TTS |
 | `/model <name>` | Switch model |
+| `/<agent> <prompt>` | Send prompt directly to a specific agent |
 | `/<skill>` | Invoke a skill |
 | ESC | Abort running agent |
 | `exit` | End session |

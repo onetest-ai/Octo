@@ -101,7 +101,12 @@ class OctiCallbackHandler(BaseCallbackHandler):
         if output is None:
             return Text("(no output)", style="dim italic")
         try:
-            output_str = str(output)
+            # Extract .content from ToolMessage / AIMessage objects
+            # to avoid displaying repr with literal \n and \t escapes
+            if hasattr(output, "content") and isinstance(output.content, str):
+                output_str = output.content
+            else:
+                output_str = str(output)
             max_length = 2000
             # JSON
             if output_str.strip().startswith(("{", "[")):

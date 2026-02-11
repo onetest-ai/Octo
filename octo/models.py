@@ -107,6 +107,12 @@ def _make_anthropic(name: str) -> BaseChatModel:
 _bedrock_client = None
 
 
+def reset_bedrock_client() -> None:
+    """Discard the cached Bedrock client so the next call creates a fresh one."""
+    global _bedrock_client
+    _bedrock_client = None
+
+
 def _get_bedrock_client():
     global _bedrock_client
     if _bedrock_client is None:

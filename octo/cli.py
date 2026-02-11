@@ -86,7 +86,7 @@ async def _chat_loop(
 
     from octo import ui
     from octo.callbacks import create_cli_callback
-    from octo.graph import build_graph, read_todos, set_telegram_transport
+    from octo.graph import build_graph, context_info, read_todos, set_telegram_transport
     from octo.loaders.mcp_loader import create_mcp_client, filter_tools, get_mcp_configs, get_tool_filters, validate_tool_schemas
     from octo.loaders.skill_loader import load_skills
     from octo.models import make_model, resolve_model_name, _detect_provider
@@ -146,6 +146,9 @@ async def _chat_loop(
         # Build graph
         app, agent_configs, skills = await build_graph(mcp_tools)
 
+        # Wire live context bar into the toolbar
+        ui.set_context_ref(context_info)
+
         # Print welcome banner
         ui.print_welcome(
             model=active_model,
@@ -165,8 +168,11 @@ async def _chat_loop(
         # Setup input with slash command completion
         _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
                             "/tools", "/call", "/projects", "/sessions", "/plan", "/profile",
-                            "/voice", "/model", "/mcp", "/cron", "/heartbeat", "exit", "quit"]
-        slash_cmds = _BASE_SLASH_CMDS + [f"/{s.name}" for s in skills]
+                            "/voice", "/model", "/mcp", "/cron", "/heartbeat",
+                            "/create-agent", "/state", "/memory", "exit", "quit"]
+        slash_cmds = (_BASE_SLASH_CMDS
+                      + [f"/{s.name}" for s in skills]
+                      + [f"/{a.name}" for a in agent_configs])
         ui.setup_input(slash_cmds)
 
         # Callback handler — shared between CLI and Telegram so both show tool traces
@@ -252,8 +258,64 @@ async def _chat_loop(
             # Update proactive runners with new graph
             heartbeat._app = app
             cron_scheduler._app = app
-            # Refresh tab-completion with new skill names
-            ui.setup_input(_BASE_SLASH_CMDS + [f"/{s.name}" for s in skills])
+            # Refresh tab-completion with new skill and agent names
+            ui.setup_input(
+                _BASE_SLASH_CMDS
+                + [f"/{s.name}" for s in skills]
+                + [f"/{a.name}" for a in agent_configs]
+            )
+
+        async def _auto_handoff(app_ref, cfg, model_factory):
+            """Save project state on exit using a cheap LLM summarization."""
+            from octo.config import STATE_PATH
+            from octo.graph import _todos
+
+            try:
+                state = await app_ref.aget_state(cfg)
+                messages = state.values.get("messages", [])
+                if len(messages) < 3:
+                    return  # nothing worth saving
+
+                # Gather recent conversation for context
+                recent = messages[-20:]
+                summary_lines = []
+                for m in recent:
+                    role = getattr(m, "type", "unknown")
+                    content = m.content if isinstance(m.content, str) else str(m.content)
+                    if content.strip():
+                        summary_lines.append(f"[{role}]: {content[:300]}")
+
+                # Gather active plan if any
+                plan_text = ""
+                if _todos:
+                    completed = sum(1 for t in _todos if t.get("status") == "completed")
+                    plan_text = f"\nActive plan: {completed}/{len(_todos)} tasks completed."
+
+                prompt = (
+                    "Based on this conversation extract a brief session handoff note. "
+                    "Write 3-5 bullet points covering:\n"
+                    "1. What was accomplished this session\n"
+                    "2. Current position (what's in progress)\n"
+                    "3. Next steps / what to do when resuming\n\n"
+                    f"{plan_text}\n\n"
+                    "Recent conversation:\n"
+                    + "\n".join(summary_lines[-30:])
+                )
+
+                ui.print_info("Saving session state...")
+                summary_model = model_factory(tier="low")
+                response = await summary_model.ainvoke(prompt)
+
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                content = (
+                    f"# Project State\n\n_Last updated: {now}_\n\n"
+                    f"## Session Handoff\n{response.content}\n"
+                )
+                STATE_PATH.write_text(content, encoding="utf-8")
+                ui.print_info("Session state saved to STATE.md")
+            except Exception as e:
+                logger.debug("Auto-handoff failed: %s", e)
 
         try:
             while True:
@@ -264,6 +326,8 @@ async def _chat_loop(
 
                 # --- Slash commands ---
                 if user_input.lower() in ("exit", "quit"):
+                    # Auto-handoff: save project state before exiting
+                    await _auto_handoff(app, config, make_model)
                     break
 
                 if user_input == "/help":
@@ -621,6 +685,44 @@ async def _chat_loop(
                             )
                     continue
 
+                if user_input == "/state":
+                    from octo.config import STATE_PATH
+                    if STATE_PATH.is_file():
+                        content = STATE_PATH.read_text(encoding="utf-8").strip()
+                        if content:
+                            ui.print_markdown(content)
+                        else:
+                            ui.print_info("STATE.md is empty. The agent will update it during work.")
+                    else:
+                        ui.print_info("No project state saved yet. STATE.md will be created during work.")
+                    continue
+
+                if user_input.startswith("/memory"):
+                    from octo.config import MEMORY_DIR, PERSONA_DIR
+                    parts = user_input.split(maxsplit=1)
+                    sub = parts[1].strip() if len(parts) > 1 else ""
+
+                    if sub == "long":
+                        # Show long-term curated memory
+                        ltm_path = PERSONA_DIR / "MEMORY.md"
+                        if ltm_path.is_file():
+                            ui.print_markdown(ltm_path.read_text(encoding="utf-8"))
+                        else:
+                            ui.print_info("No long-term memory yet.")
+                    elif sub == "daily":
+                        # Show recent daily logs
+                        ui.print_daily_memories(MEMORY_DIR, days=7)
+                    else:
+                        # Default: show both
+                        ltm_path = PERSONA_DIR / "MEMORY.md"
+                        if ltm_path.is_file():
+                            content = ltm_path.read_text(encoding="utf-8").strip()
+                            if content:
+                                ui.console.print("[bold cyan]Long-term Memory[/bold cyan]")
+                                ui.print_markdown(content)
+                        ui.print_daily_memories(MEMORY_DIR, days=5)
+                    continue
+
                 if user_input.startswith("/heartbeat"):
                     parts = user_input.split(maxsplit=1)
                     sub = parts[1].strip() if len(parts) > 1 else ""
@@ -714,12 +816,21 @@ async def _chat_loop(
                         ui.print_error("Usage: /cron [list|add|remove|pause|resume]")
                     continue
 
-                # Check for skill invocation
+                if user_input == "/create-agent":
+                    from octo.agent_wizard import create_agent_wizard
+                    result = await create_agent_wizard(mcp_tools_by_server)
+                    if result:
+                        ui.print_info(f"Agent '{result}' created. Rebuilding graph...")
+                        await _rebuild_graph()
+                        ui.print_info(f"Done. {len(agent_configs)} agent(s) loaded.")
+                    continue
+
+                # Check for skill or agent invocation
                 if user_input.startswith("/"):
-                    skill_name = user_input.split()[0][1:]  # strip /
-                    skill = next((s for s in skills if s.name == skill_name), None)
+                    cmd_name = user_input.split()[0][1:]  # strip /
+                    skill = next((s for s in skills if s.name == cmd_name), None)
                     if skill:
-                        args = user_input[len(skill_name) + 2:].strip()
+                        args = user_input[len(cmd_name) + 2:].strip()
                         injected = f"[Skill: {skill.name}]\n\n{skill.body}"
                         if args:
                             injected += f"\n\nUser request: {args}"
@@ -735,6 +846,17 @@ async def _chat_loop(
                                 for scr in skill.scripts:
                                     injected += f"\n- `{skill.skill_dir}/{scr}`"
                         user_input = injected
+                    elif next((a for a in agent_configs if a.name == cmd_name), None):
+                        # Direct agent invocation — route to specific agent
+                        prompt = user_input[len(cmd_name) + 2:].strip()
+                        if not prompt:
+                            ui.print_error(f"Usage: /{cmd_name} <your request>")
+                            continue
+                        user_input = (
+                            f"[IMPORTANT: Route this request directly to the "
+                            f"'{cmd_name}' agent. Do not delegate to any other "
+                            f"agent.]\n\n{prompt}"
+                        )
                     else:
                         ui.print_error(f"Unknown command: {user_input}")
                         continue

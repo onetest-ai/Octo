@@ -28,6 +28,8 @@ def _classify_error(error: BaseException) -> str | None:
         return "context_overflow"
     if "serviceunav" in msg or "service unavailable" in msg or "503" in msg:
         return "timeout"  # treat same as timeout — transient
+    if "connection was closed" in msg or "connection reset" in msg or "broken pipe" in msg:
+        return "connection_closed"
     return None
 
 
@@ -123,6 +125,20 @@ async def invoke_with_retry(
                     except Exception as e2:
                         raise e2
                 raise  # compact failed, give up
+
+            if category == "connection_closed" and attempt < _MAX_RETRIES:
+                # Connection dropped — reset the cached Bedrock client so
+                # the next attempt creates a fresh connection.
+                try:
+                    from octo.models import reset_bedrock_client
+                    reset_bedrock_client()
+                except ImportError:
+                    pass
+                delay = _BACKOFF_TIMEOUT[min(attempt, len(_BACKOFF_TIMEOUT) - 1)]
+                if on_retry:
+                    await on_retry(f"Connection lost, reconnecting in {delay}s ({attempt + 1}/{_MAX_RETRIES})...", attempt + 1)
+                await asyncio.sleep(delay)
+                continue
 
             if category == "timeout" and attempt < _MAX_RETRIES:
                 delay = _BACKOFF_TIMEOUT[min(attempt, len(_BACKOFF_TIMEOUT) - 1)]

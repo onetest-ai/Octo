@@ -186,7 +186,7 @@ def _check_persona_files() -> CheckResult:
     from octo.config import PERSONA_DIR
 
     required = ["SOUL.md", "IDENTITY.md"]
-    optional = ["USER.md", "AGENTS.md", "MEMORY.md", "TOOLS.md"]
+    optional = ["USER.md", "AGENTS.md", "MEMORY.md"]
 
     if not PERSONA_DIR.is_dir():
         return CheckResult(

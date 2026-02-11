@@ -26,6 +26,17 @@ from octo.loaders.skill_loader import SkillConfig
 
 console = Console()
 
+# ── Context usage (updated by graph.py pre_model_hook) ───────────────
+# Module-level ref — graph.py sets this dict; the toolbar reads it.
+_context_ref: dict[str, int] | None = None
+
+
+def set_context_ref(ref: dict[str, int]) -> None:
+    """Register the context_info dict from graph.py for live toolbar display."""
+    global _context_ref
+    _context_ref = ref
+
+
 # ── Logo ──────────────────────────────────────────────────────────────
 
 LOGO = [
@@ -117,15 +128,17 @@ def print_welcome(
         ("/skills", "Skills management"),
         ("/tools", "MCP tools"),
         ("/mcp", "MCP servers"),
+        ("/create-agent", "Create agent"),
         ("/plan", "Task plan"),
         ("/context", "Context usage"),
+        ("/state", "Project state"),
+        ("/memory", "View memories"),
         ("/profile", "Model profile"),
         ("/clear", "New conversation"),
-        ("/sessions", "Sessions"),
         ("exit", "End session"),
     ]
     for cmd, desc in cmds:
-        right.append(f"{cmd:<12}", style="bold yellow")
+        right.append(f"{cmd:<14}", style="bold yellow")
         right.append(f"{desc}\n", style="dim")
 
     columns = Columns([left, right], padding=(0, 4), expand=False)
@@ -184,6 +197,33 @@ def print_telegram_echo(user_text: str, response_text: str) -> None:
 
 def print_markdown(text: str) -> None:
     console.print(Markdown(text))
+
+
+def print_daily_memories(memory_dir, days: int = 5) -> None:
+    """Print recent daily memory log files."""
+    from datetime import date, timedelta
+    from pathlib import Path
+
+    memory_dir = Path(memory_dir)
+    if not memory_dir.is_dir():
+        print_info("No daily memories found.")
+        return
+
+    today = date.today()
+    found = False
+    for i in range(days):
+        d = today - timedelta(days=i)
+        path = memory_dir / f"{d.isoformat()}.md"
+        if path.is_file():
+            content = path.read_text(encoding="utf-8").strip()
+            if content:
+                if not found:
+                    console.print("[bold cyan]Daily Memories[/bold cyan]")
+                found = True
+                console.print(Markdown(content))
+
+    if not found:
+        print_info(f"No daily memories in the last {days} days.")
 
 
 # ── Agent / skill / help tables ──────────────────────────────────────
@@ -466,6 +506,8 @@ def print_help() -> None:
         ("/clear", "Reset conversation (new thread)"),
         ("/compact", "Summarize older messages to free context"),
         ("/context", "Show context window usage"),
+        ("/state", "Show project state (STATE.md)"),
+        ("/memory [sub]", "View memories (daily/long, default: both)"),
         ("/agents", "List loaded agents"),
         ("/skills [cmd]", "Skills (list/search/install/remove)"),
         ("/tools", "List MCP tools by server"),
@@ -477,10 +519,13 @@ def print_help() -> None:
         ("/profile [name]", "Show/switch model profile (quality/balanced/budget)"),
         ("/heartbeat [test]", "Heartbeat status or force a tick"),
         ("/cron [cmd]", "Scheduled tasks (list/add/remove/pause/resume)"),
+        ("/create-agent", "AI-assisted agent creation wizard"),
         ("/voice on|off", "Toggle TTS"),
         ("/model <name>", "Switch model"),
+        ("/<agent> <prompt>", "Send prompt directly to a specific agent"),
+        ("/<skill>", "Invoke a skill"),
         ("ESC", "Abort running agent"),
-        ("exit", "End session"),
+        ("exit", "End session (auto-saves state)"),
         ("", ""),
         ("octo init", "Run setup wizard"),
         ("octo doctor", "Check configuration health"),
@@ -536,15 +581,39 @@ async def styled_input_async() -> str:
     if _session is None:
         setup_input([])
 
+    def _toolbar():
+        keys = (
+            " <b>Enter</b> send  "
+            "<b>Esc+Enter</b> newline  "
+            "<b>Tab</b> complete  "
+            "<b>Esc</b> abort"
+        )
+        if _context_ref:
+            used = _context_ref.get("used", 0)
+            limit = _context_ref.get("limit", 200_000)
+            if used > 0 and limit > 0:
+                pct = used / limit * 100
+                if pct < 30:
+                    color = "ansigreen"
+                elif pct < 50:
+                    color = "ansicyan"
+                elif pct < 70:
+                    color = "ansiyellow"
+                else:
+                    color = "ansired"
+                bar_len = 10
+                filled = int(bar_len * pct / 100)
+                bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
+                used_k = f"{used // 1000}K" if used >= 1000 else str(used)
+                limit_k = f"{limit // 1000}K"
+                ctx = f'  <style fg="{color}">{bar} {pct:.0f}% ({used_k}/{limit_k})</style>'
+                return HTML(keys + ctx)
+        return HTML(keys)
+
     try:
         text = await _session.prompt_async(
             HTML("<b>&gt;</b> "),
-            bottom_toolbar=HTML(
-                " <b>Enter</b> send  "
-                "<b>Esc+Enter</b> newline  "
-                "<b>Tab</b> complete  "
-                "<b>Esc</b> abort"
-            ),
+            bottom_toolbar=_toolbar,
         )
         return text.strip()
     except (EOFError, KeyboardInterrupt):
