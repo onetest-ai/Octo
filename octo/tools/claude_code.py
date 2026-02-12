@@ -16,7 +16,7 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from octo.config import PROJECTS, get_project_for_agent
+from octo.config import PROJECTS, CLAUDE_CODE_TIMEOUT, get_project_for_agent
 
 
 def _resolve_project(agent_name: str = "", working_directory: str = ""):
@@ -52,7 +52,7 @@ async def claude_code(
     prompt: str,
     working_directory: str = "",
     agent: str = "",
-    timeout: int = 300,
+    timeout: int = CLAUDE_CODE_TIMEOUT,
 ) -> str:
     """Run a task using Claude Code CLI in a project directory.
 
@@ -67,7 +67,7 @@ async def claude_code(
             agent is specified, auto-resolves from project registry.
         agent: Optional agent name (from .claude/agents/) to use.
             This also determines which project to run in.
-        timeout: Maximum seconds to wait (default 300).
+        timeout: Maximum seconds to wait (default from CLAUDE_CODE_TIMEOUT env, 1800s).
 
     Returns:
         Claude Code's response text, or error message.

@@ -104,6 +104,10 @@ SUMMARIZATION_KEEP_TOKENS = int(os.getenv("SUMMARIZATION_KEEP_TOKENS", "20000"))
 # Supervisor pre-model hook — max chars per message before truncation (safety net)
 SUPERVISOR_MSG_CHAR_LIMIT = int(os.getenv("SUPERVISOR_MSG_CHAR_LIMIT", "30000"))
 
+# Claude Code tool — default subprocess timeout in seconds.
+# Claude Code tasks can run for up to an hour; 2400s (40min) is a safe default.
+CLAUDE_CODE_TIMEOUT = int(os.getenv("CLAUDE_CODE_TIMEOUT", "2400"))
+
 # --- Model Profiles ---
 # Named profiles mapping agent roles to model tiers.
 # quality  = best output, highest cost

@@ -17,7 +17,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, LLMResult
 from rich import box
-from rich.console import Console, Group
+from rich.console import Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
@@ -26,7 +26,9 @@ from rich.text import Text
 
 logger = logging.getLogger(__name__)
 
-console = Console()
+# Share the single Console instance from ui.py — ensures consistent
+# terminal width detection after resize (SIGWINCH handled there).
+from octo.ui import console
 
 # Box styles for different block types
 TOOL_BOX = box.ROUNDED

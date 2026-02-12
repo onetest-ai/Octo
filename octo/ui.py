@@ -13,6 +13,9 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 
+import os
+import signal
+
 from rich import box
 from rich.columns import Columns
 from rich.console import Console, Group
@@ -24,7 +27,33 @@ from rich.text import Text
 from octo.loaders.agent_loader import AgentConfig
 from octo.loaders.skill_loader import SkillConfig
 
+# Remove stale COLUMNS/LINES from environ so Rich uses os.get_terminal_size()
+# (ioctl) for live terminal dimensions.  These env vars are snapshots from
+# process start and don't update on terminal resize.
+os.environ.pop("COLUMNS", None)
+os.environ.pop("LINES", None)
+
 console = Console()
+
+
+def _handle_winch(signum, frame):
+    """Handle terminal resize — clear stale env vars and cached dimensions.
+
+    Rich checks COLUMNS/LINES env vars *after* os.get_terminal_size(), and
+    the env vars override the ioctl result. They're also checked in __init__
+    where they can freeze _width/_height permanently. We clear both.
+    """
+    os.environ.pop("COLUMNS", None)
+    os.environ.pop("LINES", None)
+    # Reset any cached dimensions so Rich re-reads via ioctl
+    console._width = None
+    console._height = None
+
+
+try:
+    signal.signal(signal.SIGWINCH, _handle_winch)
+except (OSError, ValueError):
+    pass  # not on main thread or signal not available on this platform
 
 # ── Context usage (updated by graph.py pre_model_hook) ───────────────
 # Module-level ref — graph.py sets this dict; the toolbar reads it.
