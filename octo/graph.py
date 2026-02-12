@@ -793,10 +793,20 @@ async def build_graph(mcp_tools: list | None = None) -> Any:
         return result
 
     # Build workers:
-    # 1. Project workers — one per project, wraps claude_code
+    # 1. Project workers — one per project, wraps claude_code (skip if claude CLI absent)
     # 2. Octo workers — native agents (verifier, etc.)
     # 3. Deep agents — deep research agents with persistent workspaces
-    project_workers = _build_project_agents(project_agents)
+    import shutil
+    if shutil.which("claude"):
+        project_workers = _build_project_agents(project_agents)
+    else:
+        project_workers = []
+        if project_agents:
+            import logging
+            logging.getLogger("octo").warning(
+                "Claude Code CLI not found — project workers disabled. "
+                "Install: npm install -g @anthropic-ai/claude-code"
+            )
     octo_workers = _build_worker_agents(octo_agents, mcp_tools)
     deep_workers = _build_deep_agents(octo_agents, mcp_tools)
 
