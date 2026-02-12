@@ -1,8 +1,9 @@
 [project]
 name = "octo"
 version = "0.1.0"
-description = "Octi — LangGraph multi-agent console with Rich UI and Telegram"
+description = "Octo — LangGraph multi-agent CLI with Rich UI and Telegram transport"
 requires-python = ">=3.11"
+license = {file = "LICENSE"}
 dependencies = [
     "langchain>=1.2.0",
     "langchain-anthropic",

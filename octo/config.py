@@ -30,6 +30,11 @@ DB_PATH = OCTO_DIR / "octo.db"
 PERSONA_DIR = OCTO_DIR / "persona"
 MEMORY_DIR = OCTO_DIR / "memory"
 SKILLS_DIR = OCTO_DIR / "skills"
+# Additional dirs scanned for skills (skills.sh / Agent Skills ecosystem)
+EXTERNAL_SKILLS_DIRS: list[Path] = [
+    WORKSPACE / ".agents" / "skills",   # skills.sh universal path
+    WORKSPACE / ".claude" / "skills",   # Claude Code skills path
+]
 SKILLS_REGISTRY_URL = os.getenv(
     "SKILLS_REGISTRY_URL",
     "https://raw.githubusercontent.com/onetest-ai/skills/main/registry.json",

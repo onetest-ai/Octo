@@ -41,7 +41,7 @@ Adding a new **built-in tool** requires:
 3. Supervisor prompt update if the tool needs usage instructions
 
 ### Memory & Documentation
-- After significant changes, update `MEMORY.md` at `.claude/projects/-Users-arozumenko-Development-Octo/memory/MEMORY.md`
+- After significant changes, update `MEMORY.md` at `.claude/projects/<project-slug>/memory/MEMORY.md`
 - Keep MEMORY.md under 200 lines (it's loaded into system prompt)
 - Update `README.md` when user-visible features change
 

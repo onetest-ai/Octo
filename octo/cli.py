@@ -417,9 +417,83 @@ async def _chat_loop(
                             ui.print_info(
                                 f"Done. {len(skills)} skill(s) loaded."
                             )
+                    elif sub == "import" and arg:
+                        # /skills import <owner/repo> [skill-name]
+                        # Installs via claude-code agent then copies to .octo/skills/
+                        import asyncio as _aio
+                        import shlex
+                        from octo.skills_cli import parse_add_output, strip_ansi
+                        tokens = shlex.split(arg.strip())
+                        source = tokens[0]
+                        cmd = ["npx", "skills", "add", source,
+                               "-a", "claude-code", "-y"]
+                        if len(tokens) > 1:
+                            cmd.extend(["-s", *tokens[1:]])
+                        ui.print_info(f"Importing from skills.sh: {source} ...")
+                        proc = await _aio.create_subprocess_exec(
+                            *cmd,
+                            stdin=_aio.subprocess.DEVNULL,
+                            stdout=_aio.subprocess.PIPE,
+                            stderr=_aio.subprocess.STDOUT,
+                        )
+                        stdout, _ = await proc.communicate()
+                        raw = stdout.decode(errors="replace").strip()
+                        if proc.returncode == 0:
+                            installed = parse_add_output(raw)
+                            if installed:
+                                ui.print_info(
+                                    f"Installed {len(installed)} skill(s): "
+                                    + ", ".join(installed)
+                                )
+                            else:
+                                ui.print_info(strip_ansi(raw))
+                            ui.print_info("Rebuilding graph...")
+                            await _rebuild_graph()
+                            ui.print_info(
+                                f"Done. {len(skills)} skill(s) loaded."
+                            )
+                        else:
+                            ui.print_error(
+                                f"Import failed (exit {proc.returncode}). "
+                                "Is Node.js installed?"
+                            )
+                    elif sub == "find":
+                        import asyncio as _aio
+                        from octo.skills_cli import (
+                            parse_find_no_results, parse_find_output,
+                        )
+                        query = arg.strip()
+                        if not query:
+                            ui.print_error("Usage: /skills find <query>")
+                        else:
+                            ui.print_info(f"Searching skills.sh for '{query}'...")
+                            proc = await _aio.create_subprocess_exec(
+                                "npx", "skills", "find", query,
+                                stdin=_aio.subprocess.DEVNULL,
+                                stdout=_aio.subprocess.PIPE,
+                                stderr=_aio.subprocess.STDOUT,
+                            )
+                            stdout, _ = await proc.communicate()
+                            raw = stdout.decode(errors="replace").strip()
+                            no_match = parse_find_no_results(raw)
+                            if no_match:
+                                ui.print_info(no_match)
+                            else:
+                                results = parse_find_output(raw)
+                                if results:
+                                    for r in results:
+                                        ui.print_info(f"  {r['handle']}")
+                                        if r["url"]:
+                                            ui.print_info(f"    {r['url']}")
+                                    ui.print_info(
+                                        f"\n{len(results)} result(s). "
+                                        "Install: /skills import <owner/repo> [skill-name]"
+                                    )
+                                else:
+                                    ui.print_info("No results.")
                     else:
                         ui.print_error(
-                            "Usage: /skills [list|search <query>|install <name>|remove <name>]"
+                            "Usage: /skills [list|search|install|remove|import|find]"
                         )
                     continue
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from octo.config import SKILLS_DIR
+from octo.config import EXTERNAL_SKILLS_DIRS, SKILLS_DIR
 
 log = logging.getLogger(__name__)
 
@@ -100,19 +100,44 @@ def _parse_skill_md(path: Path) -> SkillConfig | None:
     )
 
 
-def load_skills() -> list[SkillConfig]:
-    """Scan .octo/skills/ directory and return SkillConfig list."""
-    skills: list[SkillConfig] = []
-
-    if not SKILLS_DIR.is_dir():
-        return skills
-
-    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+def _scan_skills_dir(
+    directory: Path, seen: set[str], source: str = "local",
+) -> list[SkillConfig]:
+    """Scan a single skills directory, skipping names already in *seen*."""
+    results: list[SkillConfig] = []
+    if not directory.is_dir():
+        return results
+    for skill_dir in sorted(directory.iterdir()):
+        if not skill_dir.is_dir():
+            continue
         skill_file = skill_dir / "SKILL.md"
-        if skill_file.is_file():
-            cfg = _parse_skill_md(skill_file)
-            if cfg:
-                skills.append(cfg)
+        if not skill_file.is_file():
+            continue
+        cfg = _parse_skill_md(skill_file)
+        if cfg and cfg.name not in seen:
+            cfg.source = source
+            seen.add(cfg.name)
+            results.append(cfg)
+    return results
+
+
+def load_skills() -> list[SkillConfig]:
+    """Scan .octo/skills/ and external skill dirs (skills.sh ecosystem).
+
+    Priority: .octo/skills/ wins over external dirs. Within external dirs,
+    first-found wins (so .agents/skills/ beats .claude/skills/).
+    """
+    seen: set[str] = set()
+
+    # Primary: Octo-native skills
+    skills = _scan_skills_dir(SKILLS_DIR, seen)
+
+    # External: skills.sh / Agent Skills ecosystem directories
+    for ext_dir in EXTERNAL_SKILLS_DIRS:
+        found = _scan_skills_dir(ext_dir, seen, source="skills.sh")
+        if found:
+            log.info("Loaded %d skill(s) from %s", len(found), ext_dir)
+        skills.extend(found)
 
     return skills
 

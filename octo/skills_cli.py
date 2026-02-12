@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 import urllib.error
@@ -414,3 +415,79 @@ def update(name: str, update_all: bool, no_deps: bool) -> None:
         updated += 1
 
     click.echo(f"\n{updated} skill(s) updated.")
+
+
+# ---------------------------------------------------------------------------
+# skills.sh output parsing
+# ---------------------------------------------------------------------------
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\[[\d;]*[A-Za-z]")
+# Box-drawing and spinner chars to strip from add output
+_BOX_RE = re.compile(r"[┌┐└┘├┤┬┴┼─│╮╯◇◆●◒◐◓◑]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from text."""
+    return _ANSI_RE.sub("", text)
+
+
+def _clean_lines(raw: str) -> list[str]:
+    """Strip ANSI, normalize, return non-empty trimmed lines."""
+    clean = strip_ansi(raw)
+    return [ln.strip() for ln in clean.splitlines() if ln.strip()]
+
+
+def parse_find_output(raw: str) -> list[dict[str, str]]:
+    """Parse ``npx skills find`` output into a list of {handle, url} dicts.
+
+    Each result in the output is two lines::
+
+        owner/repo@skill-name
+        └ https://skills.sh/owner/repo/skill-name
+    """
+    lines = _clean_lines(raw)
+    results: list[dict[str, str]] = []
+
+    # Pattern: word/word@word (GitHub owner/repo@skill)
+    handle_re = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@[\w:.+-]+$")
+
+    for i, line in enumerate(lines):
+        if not handle_re.match(line):
+            continue
+        url = ""
+        if i + 1 < len(lines):
+            next_line = lines[i + 1].lstrip("└ ").strip()
+            if next_line.startswith("http"):
+                url = next_line
+        results.append({"handle": line, "url": url})
+
+    return results
+
+
+def parse_find_no_results(raw: str) -> str | None:
+    """Return the 'No skills found' message if present, else None."""
+    for line in _clean_lines(raw):
+        if line.startswith("No skills found"):
+            return line
+    return None
+
+
+def parse_add_output(raw: str) -> list[str]:
+    """Extract installed skill names from ``npx skills add`` output.
+
+    Looks for lines like: ✓ path/to/skill-name
+    """
+    installed: list[str] = []
+    for line in _clean_lines(raw):
+        # Strip box-drawing chars that surround the checkmark
+        line = _BOX_RE.sub("", line).strip()
+        if "✓" not in line:
+            continue
+        # "✓ .claude/skills/skill-name" or "✓ ~/.agents/skills/skill-name"
+        after = line.split("✓", 1)[1].strip()
+        parts = after.split("/")
+        if parts:
+            name = parts[-1].strip()
+            if name:
+                installed.append(name)
+    return installed

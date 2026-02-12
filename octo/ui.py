@@ -69,12 +69,12 @@ def set_context_ref(ref: dict[str, int]) -> None:
 # ── Logo ──────────────────────────────────────────────────────────────
 
 LOGO = [
-    " ██████╗  ██████╗████████╗██╗",
-    "██╔═══██╗██╔════╝╚══██╔══╝██║",
-    "██║   ██║██║        ██║   ██║",
-    "██║   ██║██║        ██║   ██║",
-    "╚██████╔╝╚██████╗   ██║   ██║",
-    " ╚═════╝  ╚═════╝   ╚═╝   ╚═╝",
+    " ██████╗  ██████╗████████╗ ██████╗ ",
+    "██╔═══██╗██╔════╝╚══██╔══╝██╔═══██╗",
+    "██║   ██║██║        ██║   ██║   ██║",
+    "██║   ██║██║        ██║   ██║   ██║",
+    "╚██████╔╝╚██████╗   ██║   ╚██████╔╝",
+    " ╚═════╝  ╚═════╝   ╚═╝    ╚═════╝ ",
 ]
 
 
@@ -309,9 +309,10 @@ def print_skills(skills: Sequence[SkillConfig]) -> None:
         padding=(0, 1),
     )
     table.add_column("Command", style="bold yellow", no_wrap=True)
-    table.add_column("Description", max_width=60)
+    table.add_column("Source", style="dim", no_wrap=True)
+    table.add_column("Description", max_width=55)
     for s in skills:
-        table.add_row(f"/{s.name}", s.description[:60])
+        table.add_row(f"/{s.name}", s.source, s.description[:55])
     console.print(table)
     console.print()
 
@@ -538,7 +539,7 @@ def print_help() -> None:
         ("/state", "Show project state (STATE.md)"),
         ("/memory [sub]", "View memories (daily/long, default: both)"),
         ("/agents", "List loaded agents"),
-        ("/skills [cmd]", "Skills (list/search/install/remove)"),
+        ("/skills [cmd]", "Skills (list/search/install/remove/import/find)"),
         ("/tools", "List MCP tools by server"),
         ("/call [srv] <tool>", "Call MCP tool directly: /call github get_me"),
         ("/mcp [cmd]", "MCP servers (add/remove/disable/enable/reload)"),
