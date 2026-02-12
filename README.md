@@ -10,8 +10,14 @@ Octo orchestrates AI agents from multiple projects through a single chat interfa
 
 ## Prerequisites
 
+**Required:**
 - Python 3.11 or higher
+- Node.js 18+ (most MCP servers use `npx`)
 - At least one LLM provider configured (Anthropic, AWS Bedrock, OpenAI, Azure OpenAI, or GitHub Models)
+
+**Optional:**
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — enables project workers that delegate tasks via `claude -p`
+- [skills.sh](https://skills.sh) (`npm install -g skills`) — enables `/skills import` and `/skills find` from chat
 
 ## Installation
 
