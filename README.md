@@ -1,5 +1,6 @@
 # Octo
 
+[![PyPI](https://img.shields.io/pypi/v/octo-agent)](https://pypi.org/project/octo-agent/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -12,10 +13,31 @@ Octo orchestrates AI agents from multiple projects through a single chat interfa
 - Python 3.11 or higher
 - At least one LLM provider configured (Anthropic, AWS Bedrock, OpenAI, Azure OpenAI, or GitHub Models)
 
+## Installation
+
+> **Do not install globally.** Octo has many dependencies that can conflict with
+> other packages. Always use a virtual environment.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+pip install octo-agent
+```
+
+Or for development (editable install from source):
+
+```bash
+git clone https://github.com/onetest-ai/Octo.git
+cd Octo
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
 ## Quick Start
 
 ```bash
-pip install -e .
 octo init          # interactive setup wizard — creates .env + scaffolds .octo/
 octo               # start chatting
 ```
