@@ -419,14 +419,15 @@ async def _chat_loop(
                             )
                     elif sub == "import" and arg:
                         # /skills import <owner/repo> [skill-name]
-                        # Installs via claude-code agent then copies to .octo/skills/
+                        # Installs globally via codex agent; CODEX_HOME points
+                        # to .octo/ so skills land in .octo/skills/.
                         import asyncio as _aio
                         import shlex
                         from octo.skills_cli import parse_add_output, strip_ansi
                         tokens = shlex.split(arg.strip())
                         source = tokens[0]
                         cmd = ["npx", "skills", "add", source,
-                               "-a", "claude-code", "-y"]
+                               "-a", "codex", "-g", "-y"]
                         if len(tokens) > 1:
                             cmd.extend(["-s", *tokens[1:]])
                         ui.print_info(f"Importing from skills.sh: {source} ...")

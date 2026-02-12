@@ -30,6 +30,9 @@ DB_PATH = OCTO_DIR / "octo.db"
 PERSONA_DIR = OCTO_DIR / "persona"
 MEMORY_DIR = OCTO_DIR / "memory"
 SKILLS_DIR = OCTO_DIR / "skills"
+# Tell skills.sh CLI to use .octo/ as CODEX_HOME so `-a codex -g` installs
+# to .octo/skills/ directly.
+os.environ.setdefault("CODEX_HOME", str(OCTO_DIR))
 # Additional dirs scanned for skills (skills.sh / Agent Skills ecosystem)
 EXTERNAL_SKILLS_DIRS: list[Path] = [
     WORKSPACE / ".agents" / "skills",   # skills.sh universal path
