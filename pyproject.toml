@@ -1,5 +1,5 @@
 [project]
-name = "octo"
+name = "octo-agent"
 version = "0.1.0"
 description = "Octo — LangGraph multi-agent CLI with Rich UI and Telegram transport"
 readme = "README.md"
