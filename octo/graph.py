@@ -293,8 +293,15 @@ def _build_pre_model_hook(model_name: str):
     _MIN_KEEP = 6            # never keep fewer than 6 messages
     _MAX_MSG_CHARS = SUPERVISOR_MSG_CHAR_LIMIT
 
+    _IMAGE_BLOCK_TYPES = {"image_url", "image"}
+
     def _truncate_message(msg):
-        """Truncate a single message's content if it's too large."""
+        """Truncate a single message's content if it's too large.
+
+        Image blocks (image_url, image) are always preserved — they are
+        handled natively by LLM provider APIs and should not be dropped
+        or counted toward the text char limit.
+        """
         content = msg.content
         if isinstance(content, str) and len(content) > _MAX_MSG_CHARS:
             truncated = content[:_MAX_MSG_CHARS] + (
@@ -303,26 +310,66 @@ def _build_pre_model_hook(model_name: str):
             # Create a copy with truncated content
             return msg.model_copy(update={"content": truncated})
         if isinstance(content, list):
-            # Multi-part messages (e.g. tool results with structured content)
-            total = sum(len(str(p)) for p in content)
-            if total > _MAX_MSG_CHARS:
+            # Separate image blocks (preserve as-is) from text blocks (truncate)
+            image_parts = []
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") in _IMAGE_BLOCK_TYPES:
+                    image_parts.append(part)
+                else:
+                    text_parts.append(part)
+
+            # Only truncate text parts
+            text_total = sum(len(str(p)) for p in text_parts)
+            if text_total > _MAX_MSG_CHARS:
                 truncated_parts = []
                 running = 0
-                for part in content:
+                for part in text_parts:
                     part_str = str(part)
                     if running + len(part_str) > _MAX_MSG_CHARS:
                         remaining = _MAX_MSG_CHARS - running
                         if remaining > 100 and isinstance(part, dict) and "text" in part:
                             truncated_part = dict(part)
                             truncated_part["text"] = part["text"][:remaining] + (
-                                f"\n\n... [truncated — original was {total:,} chars total]"
+                                f"\n\n... [truncated — original was {text_total:,} chars total]"
                             )
                             truncated_parts.append(truncated_part)
                         break
                     truncated_parts.append(part)
                     running += len(part_str)
-                return msg.model_copy(update={"content": truncated_parts})
+                # Re-attach image blocks after text
+                return msg.model_copy(update={"content": truncated_parts + image_parts})
+            elif image_parts:
+                # No text truncation needed, but ensure order is preserved
+                return msg
         return msg
+
+    def _strip_images_for_counting(messages):
+        """Create lightweight copies of messages with image data removed.
+
+        Base64 image data inflates token counts by hundreds of thousands —
+        but images are sent as binary to the API, not as tokens.  We replace
+        image blocks with a small placeholder for accurate counting.
+        """
+        stripped = []
+        for msg in messages:
+            content = msg.content
+            if isinstance(content, list) and any(
+                isinstance(p, dict) and p.get("type") in _IMAGE_BLOCK_TYPES
+                for p in content
+            ):
+                new_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in _IMAGE_BLOCK_TYPES:
+                        # ~85 tokens per image (Anthropic charges ~1600 tokens
+                        # per image but that's separate from context counting)
+                        new_parts.append({"type": "text", "text": "[image]"})
+                    else:
+                        new_parts.append(part)
+                stripped.append(msg.model_copy(update={"content": new_parts}))
+            else:
+                stripped.append(msg)
+        return stripped
 
     def pre_model_hook(state):
         messages = state.get("messages", [])
@@ -330,7 +377,7 @@ def _build_pre_model_hook(model_name: str):
         # Stage 1: truncate any oversized individual messages
         messages = [_truncate_message(m) for m in messages]
 
-        tokens = count_tokens_approximately(messages)
+        tokens = count_tokens_approximately(_strip_images_for_counting(messages))
         context_info["used"] = tokens
         limit = context_info["limit"]
 
@@ -338,7 +385,7 @@ def _build_pre_model_hook(model_name: str):
         if tokens > limit * _TRIM_THRESHOLD and len(messages) > _MIN_KEEP:
             keep = max(_MIN_KEEP, int(len(messages) * _KEEP_RATIO))
             trimmed = messages[-keep:]
-            trimmed_tokens = count_tokens_approximately(trimmed)
+            trimmed_tokens = count_tokens_approximately(_strip_images_for_counting(trimmed))
             _log.info(
                 "Auto-trimming context: %d→%d tokens (%d→%d messages)",
                 tokens, trimmed_tokens, len(messages), len(trimmed),
