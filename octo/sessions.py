@@ -23,7 +23,7 @@ def _load_all() -> list[dict]:
 
 
 def _save_all(sessions: list[dict]) -> None:
-    SESSIONS_PATH.write_text(json.dumps(sessions, indent=2) + "\n")
+    SESSIONS_PATH.write_text(json.dumps(sessions, indent=2, ensure_ascii=False) + "\n")
 
 
 def save_session(

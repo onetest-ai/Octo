@@ -17,7 +17,8 @@ def _classify_error(error: BaseException) -> str | None:
     """Classify an error into a remediation category.
 
     Returns:
-        "timeout", "rate_limit", "context_overflow", or None (unknown).
+        "timeout", "rate_limit", "context_overflow", "connection_closed",
+        "orphaned_tools", or None (unknown).
     """
     msg = str(error).lower()
     if "read timeout" in msg or "connect timeout" in msg or "timed out" in msg:
@@ -28,6 +29,8 @@ def _classify_error(error: BaseException) -> str | None:
         return "context_overflow"
     if "serviceunav" in msg or "service unavailable" in msg or "503" in msg:
         return "timeout"  # treat same as timeout — transient
+    if "expected toolresult" in msg or "expected tool_result" in msg:
+        return "orphaned_tools"
     if "connection was closed" in msg or "connection reset" in msg or "broken pipe" in msg:
         return "connection_closed"
     return None
@@ -86,6 +89,121 @@ async def auto_compact(app: Any, config: dict) -> bool:
         return False
 
 
+async def auto_repair_orphaned_tools(app: Any, config: dict) -> bool:
+    """Repair orphaned tool_use blocks in the checkpoint.
+
+    When Bedrock drops a connection mid-response (e.g. content policy), the
+    checkpoint may contain an AIMessage with tool_calls but no corresponding
+    ToolMessage.  Bedrock's Converse API rejects this on the next call:
+    "Expected toolResult blocks at messages.X.content for the following Ids: ..."
+
+    Fix: inject synthetic ToolMessages for all orphaned tool call IDs.
+    Returns True if repairs were made.
+    """
+    try:
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        state = await app.aget_state(config)
+        messages = state.values.get("messages", [])
+        if not messages:
+            return False
+
+        # Collect all tool_call_ids that have responses
+        responded_ids: set[str] = set()
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and getattr(msg, "tool_call_id", None):
+                responded_ids.add(msg.tool_call_id)
+
+        # Find AIMessages with orphaned tool calls
+        repairs: list[ToolMessage] = []
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            for tc in tool_calls:
+                tc_id = tc.get("id", "")
+                if tc_id and tc_id not in responded_ids:
+                    repairs.append(ToolMessage(
+                        content="[Tool call interrupted — connection was lost before execution]",
+                        tool_call_id=tc_id,
+                        name=tc.get("name", "unknown"),
+                    ))
+
+        if not repairs:
+            return False
+
+        # Inject synthetic tool results into the state
+        await app.aupdate_state(config, {"messages": repairs})
+        logger.info(
+            "Repaired %d orphaned tool call(s) in checkpoint",
+            len(repairs),
+        )
+        return True
+    except Exception:
+        logger.warning("Auto-repair orphaned tools failed", exc_info=True)
+        return False
+
+
+async def auto_clean_corrupted(app: Any, config: dict) -> bool:
+    """Remove corrupted messages from the checkpoint.
+
+    When ``auto_repair_orphaned_tools`` is not enough (e.g. the AIMessage
+    itself is malformed or contains content-policy-violating data), strip
+    the offending tail messages so the conversation can continue.
+
+    Strategy: walk backwards from the end and remove any AIMessage that has
+    tool_calls without matching ToolMessages, plus any dangling ToolMessages
+    that reference non-existent tool_call_ids.
+    Returns True if any messages were removed.
+    """
+    try:
+        from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+
+        state = await app.aget_state(config)
+        messages = state.values.get("messages", [])
+        if not messages:
+            return False
+
+        # Build tool_call_id → responded mapping
+        responded_ids: set[str] = set()
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and getattr(msg, "tool_call_id", None):
+                responded_ids.add(msg.tool_call_id)
+
+        # Collect IDs to remove: orphaned AI messages + dangling tool messages
+        to_remove: list[str] = []
+        ai_call_ids: set[str] = set()
+        for msg in messages:
+            if isinstance(msg, AIMessage):
+                for tc in getattr(msg, "tool_calls", None) or []:
+                    ai_call_ids.add(tc.get("id", ""))
+
+        for msg in reversed(messages):
+            msg_id = getattr(msg, "id", None)
+            if not msg_id:
+                continue
+            if isinstance(msg, AIMessage):
+                tcs = getattr(msg, "tool_calls", None) or []
+                orphans = [tc for tc in tcs if tc.get("id", "") not in responded_ids]
+                if orphans:
+                    to_remove.append(msg_id)
+            elif isinstance(msg, ToolMessage):
+                tc_id = getattr(msg, "tool_call_id", None)
+                if tc_id and tc_id not in ai_call_ids:
+                    to_remove.append(msg_id)
+
+        if not to_remove:
+            return False
+
+        remove_ops = [RemoveMessage(id=mid) for mid in to_remove]
+        await app.aupdate_state(config, {"messages": remove_ops})
+        logger.info("Cleaned %d corrupted message(s) from checkpoint", len(to_remove))
+        return True
+    except Exception:
+        logger.warning("Auto-clean corrupted messages failed", exc_info=True)
+        return False
+
+
 async def invoke_with_retry(
     app: Any,
     input_data: dict,
@@ -114,6 +232,27 @@ async def invoke_with_retry(
         except Exception as e:
             category = _classify_error(e)
             last_error = e
+
+            if category == "orphaned_tools":
+                # Repair checkpoint and retry once — don't count as a retry attempt
+                if on_retry:
+                    await on_retry("Repairing orphaned tool calls in checkpoint...", attempt + 1)
+                repaired = await auto_repair_orphaned_tools(app, config)
+                if repaired:
+                    try:
+                        return await app.ainvoke(input_data, config=config)
+                    except Exception as e2:
+                        # If repair didn't fix it, try cleaning the bad messages
+                        category2 = _classify_error(e2)
+                        if category2 == "orphaned_tools":
+                            # Still broken — remove the offending AI message entirely
+                            if on_retry:
+                                await on_retry("Removing corrupted messages from checkpoint...", attempt + 1)
+                            cleaned = await auto_clean_corrupted(app, config)
+                            if cleaned:
+                                return await app.ainvoke(input_data, config=config)
+                        raise e2
+                raise  # repair found nothing, re-raise original
 
             if category == "context_overflow" and attempt == 0:
                 if on_retry:

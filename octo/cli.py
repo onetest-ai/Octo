@@ -99,6 +99,18 @@ async def _chat_loop(
         level=logging.DEBUG if debug else logging.WARNING,
         format="%(name)s: %(message)s",
     )
+    # Silence noisy loggers (auto-retried, harmless)
+    if not debug:
+        for noisy in (
+            "telegram.ext.Updater",
+            "httpx", "httpcore",
+            "mcp", "mcp.server", "mcp.server.lowlevel",
+            "mcp.client", "mcp.client.session",
+        ):
+            logging.getLogger(noisy).setLevel(logging.CRITICAL)
+
+    # Always show VP confidence decisions (even without --debug)
+    logging.getLogger("octo.virtual_persona").setLevel(logging.INFO)
 
     # Resolve model info for display
     active_model = resolve_model_name(model_override)
@@ -148,7 +160,7 @@ async def _chat_loop(
                 if len(stools) < all_count:
                     ui.print_info(f"MCP '{sname}': {len(stools)}/{all_count} tools (filtered)")
                 tools_flat.extend(stools)
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 raise
             except BaseException as e:
                 # Build config context for the error explainer
@@ -201,7 +213,7 @@ async def _chat_loop(
         # Setup input with slash command completion
         _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
                             "/tools", "/call", "/projects", "/sessions", "/plan", "/profile",
-                            "/voice", "/model", "/mcp", "/cron", "/heartbeat",
+                            "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
                             "/create-agent", "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
                       + [f"/{s.name}" for s in skills]
@@ -241,14 +253,14 @@ async def _chat_loop(
         )
         from octo.heartbeat import HeartbeatRunner, CronScheduler, CronStore, set_cron_store
 
-        async def _deliver_proactive(text: str, source: str = "Heartbeat") -> None:
+        async def _deliver_proactive(text: str, source: str = "\U0001f493 Heartbeat") -> None:
             ui.print_response(text, source=f"Octi ({source})")
             if tg:
                 await tg.send_proactive(text, source=source)
 
         async def _deliver_cron(task: str, response: str) -> None:
             msg = f"**Scheduled task**: {task}\n\n{response}"
-            await _deliver_proactive(msg, source="Cron")
+            await _deliver_proactive(msg, source="\u23f0 Cron")
 
         heartbeat = HeartbeatRunner(
             graph_app=app,
@@ -284,6 +296,44 @@ async def _chat_loop(
         if cron_jobs:
             ui.print_status(f"Cron scheduler active ({len(cron_jobs)} jobs)", "green")
 
+        # --- Virtual Persona poller ---
+        vp_poller: Any = None
+        from octo.config import VP_ENABLED, VP_POLL_INTERVAL_SECONDS, VP_ACTIVE_START_TIME, VP_ACTIVE_END_TIME, VP_SELF_EMAILS
+        if VP_ENABLED:
+            from octo.virtual_persona.graph import build_vp_graph
+            from octo.virtual_persona.poller import VPPoller, set_self_emails
+            if VP_SELF_EMAILS:
+                set_self_emails(VP_SELF_EMAILS)
+
+            async def _deliver_escalation(
+                text: str, teams_chat_id: str = "", teams_message_id: str = "",
+            ) -> None:
+                ui.print_response(text, source="Octi (VP Escalation)")
+                if tg:
+                    await tg.send_vp_notification(text, teams_chat_id, teams_message_id)
+                elif not tg:
+                    # Console-only fallback
+                    pass
+
+            vp_graph = build_vp_graph()
+            vp_poller = VPPoller(
+                vp_graph=vp_graph,
+                octo_app=app,
+                graph_lock=graph_lock,
+                interval=VP_POLL_INTERVAL_SECONDS,
+                active_start=VP_ACTIVE_START_TIME,
+                active_end=VP_ACTIVE_END_TIME,
+                on_escalation=_deliver_escalation,
+                octo_config=config,
+            )
+            vp_poller.start()
+            vp_display = f"{VP_POLL_INTERVAL_SECONDS // 60}m" if VP_POLL_INTERVAL_SECONDS >= 60 else f"{VP_POLL_INTERVAL_SECONDS}s"
+            ui.print_status(
+                f"VP poller active (every {vp_display}, "
+                f"{VP_ACTIVE_START_TIME.strftime('%H:%M')}-"
+                f"{VP_ACTIVE_END_TIME.strftime('%H:%M')})", "green"
+            )
+
         async def _rebuild_graph():
             nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
             await session_pool.close_all()  # Close old STDIO sessions before reload
@@ -292,6 +342,8 @@ async def _chat_loop(
             # Update proactive runners with new graph
             heartbeat._app = app
             cron_scheduler._app = app
+            if vp_poller is not None:
+                vp_poller._octo_app = app
             # Refresh tab-completion with new skill and agent names
             ui.setup_input(
                 _BASE_SLASH_CMDS
@@ -954,6 +1006,17 @@ async def _chat_loop(
                         ui.print_error("Usage: /cron [list|add|remove|pause|resume]")
                     continue
 
+                if user_input.startswith("/vp"):
+                    from octo.virtual_persona.commands import handle_vp_command
+                    vp_args = user_input[3:].strip()
+                    await handle_vp_command(
+                        vp_args,
+                        vp_poller=locals().get("vp_poller"),
+                        octo_app=app,
+                        octo_config=config,
+                    )
+                    continue
+
                 if user_input == "/create-agent":
                     from octo.agent_wizard import create_agent_wizard
                     result = await create_agent_wizard(mcp_tools_by_server)
@@ -1103,6 +1166,8 @@ async def _chat_loop(
         finally:
             await heartbeat.stop()
             await cron_scheduler.stop()
+            if vp_poller is not None:
+                vp_poller.stop()
             if tg:
                 await tg.stop()
             ui.print_info("Goodbye!")

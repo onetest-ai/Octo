@@ -582,6 +582,7 @@ def print_help() -> None:
         ("/profile [name]", "Show/switch model profile (quality/balanced/budget)"),
         ("/heartbeat [test]", "Heartbeat status or force a tick"),
         ("/cron [cmd]", "Scheduled tasks (list/add/remove/pause/resume)"),
+        ("/vp [cmd]", "Virtual Persona (status/enable/disable/allow/block/test/stats)"),
         ("/create-agent", "AI-assisted agent creation wizard"),
         ("/voice on|off", "Toggle TTS"),
         ("/model <name>", "Switch model"),

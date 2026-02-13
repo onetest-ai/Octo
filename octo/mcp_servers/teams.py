@@ -29,6 +29,17 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
+_loggers_silenced = False
+
+def _silence_noisy_loggers() -> None:
+    """Suppress httpx/mcp request-level chatter. Called before each API call."""
+    global _loggers_silenced
+    if _loggers_silenced:
+        return
+    for name in ("httpx", "httpcore", "mcp.server", "mcp.server.lowlevel"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+    _loggers_silenced = True
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -84,17 +95,21 @@ def _update_contacts_from_chats(chats: list[dict[str, Any]]) -> None:
         entry["topic"] = chat.get("topic")
         if "members" in chat:
             entry["members"] = chat["members"]
-            # Index users
+            # Index users (preserving email from members data)
             for m in chat["members"]:
                 if m.get("displayName"):
-                    contacts["users"][m["displayName"].lower()] = {
+                    existing = contacts["users"].get(m["displayName"].lower(), {})
+                    user_entry = {
                         "displayName": m["displayName"],
                         "chatIds": list(set(
-                            contacts["users"]
-                            .get(m["displayName"].lower(), {})
-                            .get("chatIds", []) + [cid]
+                            existing.get("chatIds", []) + [cid]
                         )),
                     }
+                    # Preserve email from expanded member data
+                    email = m.get("email", "") or existing.get("email", "")
+                    if email:
+                        user_entry["email"] = email
+                    contacts["users"][m["displayName"].lower()] = user_entry
         if chat.get("lastMessage", {}).get("from"):
             name = chat["lastMessage"]["from"]
             entry.setdefault("members", [])
@@ -116,16 +131,62 @@ def _update_contacts_from_members(chat_id: str, members: list[dict[str, Any]]) -
     entry["members"] = members
     contacts["chats"][chat_id] = entry
     for m in members:
-        name = m.get("displayName", "")
+        name = m.get("displayName") or ""
         if name:
             user = contacts["users"].get(name.lower(), {
                 "displayName": name, "chatIds": [],
             })
             user["displayName"] = name
+            # Preserve email from members data (Graph API includes it)
+            email = m.get("email", "")
+            if email:
+                user["email"] = email
             if chat_id not in user.get("chatIds", []):
                 user.setdefault("chatIds", []).append(chat_id)
             contacts["users"][name.lower()] = user
     _save_contacts(contacts)
+
+
+def _resolve_sender(
+    from_user: dict[str, Any],
+    user_cache: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Build a structured sender dict from a Graph API ``from.user`` object.
+
+    Resolves email from the contacts cache when available (Graph API
+    message payloads only include displayName + userId, not email).
+
+    Args:
+        from_user: The ``from.user`` dict from a Graph API message.
+        user_cache: Pre-loaded ``contacts["users"]`` dict. If None,
+            no email resolution is attempted (avoids per-message disk reads).
+
+    Returns ``{"displayName": ..., "userId": ..., "email": ...}`` or
+    ``None`` if the user object is empty (system messages).
+    """
+    display_name = from_user.get("displayName") or ""
+    user_id = from_user.get("id") or ""
+    if not display_name and not user_id:
+        return None
+
+    # Resolve email from the contacts cache — try display name, then userId
+    email = ""
+    if user_cache:
+        if display_name:
+            user_entry = user_cache.get(display_name.lower(), {})
+            email = user_entry.get("email", "")
+        if not email and user_id:
+            # Scan cache for userId match (contacts are keyed by name)
+            for _k, entry in user_cache.items():
+                if entry.get("userId") == user_id:
+                    email = entry.get("email", "")
+                    break
+
+    return {
+        "displayName": display_name,
+        "userId": user_id,
+        "email": email,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +284,7 @@ async def _graph_get(
     auth: TeamsAuth, endpoint: str, params: dict[str, str] | None = None
 ) -> dict[str, Any]:
     """GET from Microsoft Graph API."""
+    _silence_noisy_loggers()
     token = auth.get_token()
     if not token:
         return {"error": _NOT_AUTHENTICATED}
@@ -241,14 +303,61 @@ async def _graph_get(
                 "This scope may require admin consent in your organization."
             )
         }
+    if resp.status_code == 404:
+        return {"error": f"Not found: {endpoint}", "code": "NotFound"}
     resp.raise_for_status()
     return resp.json()
+
+
+async def _graph_get_paged(
+    auth: TeamsAuth,
+    endpoint: str,
+    params: dict[str, str] | None = None,
+    max_pages: int = 10,
+) -> dict[str, Any]:
+    """GET from Microsoft Graph API with pagination.
+
+    Follows ``@odata.nextLink`` up to *max_pages* times, collecting all
+    ``value`` items into one list.
+    """
+    _silence_noisy_loggers()
+    token = auth.get_token()
+    if not token:
+        return {"error": _NOT_AUTHENTICATED}
+
+    all_items: list[dict[str, Any]] = []
+    url: str | None = f"{GRAPH_BASE}{endpoint}"
+    current_params: dict[str, str] | None = params
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for _ in range(max_pages):
+            if url is None:
+                break
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                params=current_params or {},
+            )
+            if resp.status_code == 401:
+                return {"error": "Token expired or invalid. Call 'login' to re-authenticate."}
+            if resp.status_code in (403, 404):
+                # Return what we have so far + error
+                break
+            resp.raise_for_status()
+            data = resp.json()
+            all_items.extend(data.get("value", []))
+            # Follow nextLink (it's a full URL, no extra params needed)
+            url = data.get("@odata.nextLink")
+            current_params = None  # nextLink already includes params
+
+    return {"value": all_items}
 
 
 async def _graph_post(
     auth: TeamsAuth, endpoint: str, body: dict[str, Any]
 ) -> dict[str, Any]:
     """POST to Microsoft Graph API."""
+    _silence_noisy_loggers()
     token = auth.get_token()
     if not token:
         return {"error": _NOT_AUTHENTICATED}
@@ -277,6 +386,9 @@ async def _graph_post(
 # ---------------------------------------------------------------------------
 # FastMCP server + tools
 # ---------------------------------------------------------------------------
+
+# Stored pagination links for follow-up calls (e.g. list-chats-next)
+_page_links: dict[str, str] = {}
 
 mcp = FastMCP(
     "teams",
@@ -309,44 +421,112 @@ def logout() -> dict[str, str]:
 
 
 @mcp.tool(name="list-chats")
-async def list_chats(limit: int = 30) -> dict[str, Any]:
-    """List your recent Teams chats with last message preview and members.
+async def list_chats(
+    limit: int = 50, expand_members: bool = False, slim: bool = False,
+) -> dict[str, Any]:
+    """List your recent Teams chats.
 
     Args:
-        limit: Number of chats to return (1-50, default 30).
+        limit: Max chats per page (1-50). One page per call.
+        expand_members: If True, include member list per chat (slower, larger response).
+        slim: If True, return only id, chatType, topic (smallest response).
     """
-    limit = max(1, min(limit, 50))
-    data = await _graph_get(auth, "/me/chats", {
-        "$top": str(limit),
-        "$expand": "lastMessagePreview,members",
-        "$orderby": "lastMessagePreview/createdDateTime desc",
-    })
+    page_size = min(max(1, limit), 50)
+    params: dict[str, str] = {"$top": str(page_size)}
+    if expand_members:
+        params["$expand"] = "members"
+
+    data = await _graph_get(auth, "/me/chats", params)
+
     if "error" in data:
         return data
+
+    has_more = "@odata.nextLink" in data
     chats = []
     for c in data.get("value", []):
-        members = [
-            {"displayName": m.get("displayName", ""), "email": m.get("email", "")}
-            for m in c.get("members", [])
-            if m.get("@odata.type", "") == "#microsoft.graph.aadUserConversationMember"
-        ]
-        chat = {
+        chat: dict[str, Any] = {
             "id": c.get("id"),
-            "topic": c.get("topic"),
             "chatType": c.get("chatType"),
-            "createdDateTime": c.get("createdDateTime"),
-            "members": members,
+            "topic": c.get("topic"),
         }
-        preview = c.get("lastMessagePreview")
-        if preview:
-            chat["lastMessage"] = {
-                "from": (preview.get("from") or {}).get("user", {}).get("displayName"),
-                "content": (preview.get("body") or {}).get("content", "")[:200],
-                "createdDateTime": preview.get("createdDateTime"),
-            }
+        if not slim:
+            chat["createdDateTime"] = c.get("createdDateTime")
+            preview = c.get("lastMessagePreview")
+            if preview:
+                chat["lastMessage"] = {
+                    "from": (preview.get("from") or {}).get("user", {}).get("displayName"),
+                    "content": (preview.get("body") or {}).get("content", "")[:200],
+                    "createdDateTime": preview.get("createdDateTime"),
+                }
+        # Only include members if expanded
+        if expand_members:
+            chat["members"] = [
+                {"displayName": m.get("displayName") or "", "email": m.get("email") or ""}
+                for m in c.get("members", [])
+                if m.get("@odata.type", "") == "#microsoft.graph.aadUserConversationMember"
+            ]
         chats.append(chat)
-    _update_contacts_from_chats(chats)
-    return {"chats": chats, "count": len(chats)}
+    if expand_members:
+        _update_contacts_from_chats(chats)
+
+    # Store nextLink for follow-up calls
+    next_link = data.get("@odata.nextLink")
+    if next_link:
+        _page_links["chats"] = next_link
+
+    return {"chats": chats, "count": len(chats), "hasMore": has_more}
+
+
+@mcp.tool(name="list-chats-next")
+async def list_chats_next(slim: bool = False) -> dict[str, Any]:
+    """Fetch the next page of chats (call after list-chats returned hasMore=true).
+
+    Args:
+        slim: If True, return only id, chatType, topic.
+    """
+    _silence_noisy_loggers()
+    next_link = _page_links.get("chats")
+    if not next_link:
+        return {"chats": [], "count": 0, "hasMore": False, "error": "No next page. Call list-chats first."}
+
+    token = auth.get_token()
+    if not token:
+        return {"error": _NOT_AUTHENTICATED}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(next_link, headers={"Authorization": f"Bearer {token}"})
+    if resp.status_code == 401:
+        return {"error": "Token expired or invalid. Call 'login' to re-authenticate."}
+    if resp.status_code in (403, 404):
+        _page_links.pop("chats", None)
+        return {"chats": [], "count": 0, "hasMore": False}
+    resp.raise_for_status()
+    data = resp.json()
+
+    has_more = "@odata.nextLink" in data
+    if has_more:
+        _page_links["chats"] = data["@odata.nextLink"]
+    else:
+        _page_links.pop("chats", None)
+
+    chats = []
+    for c in data.get("value", []):
+        chat: dict[str, Any] = {
+            "id": c.get("id"),
+            "chatType": c.get("chatType"),
+            "topic": c.get("topic"),
+        }
+        if not slim:
+            chat["createdDateTime"] = c.get("createdDateTime")
+            preview = c.get("lastMessagePreview")
+            if preview:
+                chat["lastMessage"] = {
+                    "from": (preview.get("from") or {}).get("user", {}).get("displayName"),
+                    "content": (preview.get("body") or {}).get("content", "")[:200],
+                    "createdDateTime": preview.get("createdDateTime"),
+                }
+        chats.append(chat)
+    return {"chats": chats, "count": len(chats), "hasMore": has_more}
 
 
 @mcp.tool(name="list-chat-messages")
@@ -361,15 +541,30 @@ async def list_chat_messages(chatId: str, limit: int = 30) -> dict[str, Any]:
     data = await _graph_get(auth, f"/chats/{chatId}/messages", {"$top": str(limit)})
     if "error" in data:
         return data
+    # Load contacts cache once for email resolution
+    user_cache = _load_contacts().get("users", {})
     messages = []
     for m in data.get("value", []):
-        msg = {
+        from_user = (m.get("from") or {}).get("user") or {}
+        # Extract @mentions: [{displayName, userId}]
+        raw_mentions = m.get("mentions") or []
+        mentions = [
+            {
+                "displayName": (mn.get("mentioned") or {}).get("user", {}).get("displayName", ""),
+                "userId": (mn.get("mentioned") or {}).get("user", {}).get("id", ""),
+            }
+            for mn in raw_mentions
+            if (mn.get("mentioned") or {}).get("user")
+        ]
+        msg: dict[str, Any] = {
             "id": m.get("id"),
-            "from": (m.get("from") or {}).get("user", {}).get("displayName"),
+            "from": _resolve_sender(from_user, user_cache),
             "body": (m.get("body") or {}).get("content", ""),
             "contentType": (m.get("body") or {}).get("contentType"),
             "createdDateTime": m.get("createdDateTime"),
             "messageType": m.get("messageType"),
+            "attachments": m.get("attachments"),
+            "mentions": mentions if mentions else None,
         }
         messages.append(msg)
     return {"messages": messages, "count": len(messages)}
@@ -388,9 +583,9 @@ async def list_chat_members(chatId: str) -> dict[str, Any]:
     members = []
     for m in data.get("value", []):
         members.append({
-            "displayName": m.get("displayName", ""),
-            "email": m.get("email", ""),
-            "roles": m.get("roles", []),
+            "displayName": m.get("displayName") or "",
+            "email": m.get("email") or "",
+            "roles": m.get("roles") or [],
         })
     _update_contacts_from_members(chatId, members)
     return {"members": members, "count": len(members)}
@@ -405,70 +600,60 @@ async def find_chat(query: str) -> dict[str, Any]:
         query: Person name, chat topic, or keyword to search for.
     """
     query_lower = query.lower()
+    matches = _search_contacts(query_lower)
+
+    if matches:
+        return {"matches": matches[:10], "count": len(matches), "source": "cache"}
+
+    # Cache miss — fetch recent chats to populate cache, then retry
+    fresh = await list_chats(limit=50)
+    if "error" in fresh:
+        return fresh
+
+    matches = _search_contacts(query_lower)
+    if matches:
+        return {"matches": matches[:10], "count": len(matches), "source": "fresh"}
+    return {"matches": [], "count": 0, "message": f"No chats found matching '{query}'."}
+
+
+def _search_contacts(query_lower: str) -> list[dict[str, Any]]:
+    """Search contacts cache by name or topic. Returns lightweight matches."""
     contacts = _load_contacts()
     matches: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def _add_match(
+        cid: str, chat_entry: dict, matched_user: str = "",
+    ) -> None:
+        if cid in seen_ids:
+            return
+        seen_ids.add(cid)
+        members = chat_entry.get("members", [])
+        match: dict[str, Any] = {
+            "id": cid,
+            "topic": chat_entry.get("topic"),
+            "chatType": chat_entry.get("chatType"),
+            "memberCount": len(members),
+        }
+        if matched_user:
+            match["matchedUser"] = matched_user
+        matches.append(match)
 
     # Search cached users by name
     for name_key, user_info in contacts.get("users", {}).items():
         if query_lower in name_key:
             for cid in user_info.get("chatIds", []):
                 chat_entry = contacts["chats"].get(cid, {})
-                if chat_entry and not any(m["id"] == cid for m in matches):
-                    matches.append({
-                        "id": cid,
-                        "topic": chat_entry.get("topic"),
-                        "chatType": chat_entry.get("chatType"),
-                        "members": chat_entry.get("members", []),
-                        "matchedUser": user_info.get("displayName"),
-                    })
+                if chat_entry:
+                    _add_match(cid, chat_entry, user_info.get("displayName", ""))
 
     # Search cached chats by topic
     for cid, chat_entry in contacts.get("chats", {}).items():
         topic = (chat_entry.get("topic") or "").lower()
-        if query_lower in topic and not any(m["id"] == cid for m in matches):
-            matches.append({
-                "id": cid,
-                "topic": chat_entry.get("topic"),
-                "chatType": chat_entry.get("chatType"),
-                "members": chat_entry.get("members", []),
-            })
+        if query_lower in topic:
+            _add_match(cid, chat_entry)
 
-    if matches:
-        return {"matches": matches[:10], "count": len(matches), "source": "cache"}
-
-    # Cache miss — fetch recent chats and retry
-    fresh = await list_chats(limit=50)
-    if "error" in fresh:
-        return fresh
-
-    # Search again after cache is updated
-    contacts = _load_contacts()
-    for name_key, user_info in contacts.get("users", {}).items():
-        if query_lower in name_key:
-            for cid in user_info.get("chatIds", []):
-                chat_entry = contacts["chats"].get(cid, {})
-                if chat_entry and not any(m["id"] == cid for m in matches):
-                    matches.append({
-                        "id": cid,
-                        "topic": chat_entry.get("topic"),
-                        "chatType": chat_entry.get("chatType"),
-                        "members": chat_entry.get("members", []),
-                        "matchedUser": user_info.get("displayName"),
-                    })
-
-    for cid, chat_entry in contacts.get("chats", {}).items():
-        topic = (chat_entry.get("topic") or "").lower()
-        if query_lower in topic and not any(m["id"] == cid for m in matches):
-            matches.append({
-                "id": cid,
-                "topic": chat_entry.get("topic"),
-                "chatType": chat_entry.get("chatType"),
-                "members": chat_entry.get("members", []),
-            })
-
-    if matches:
-        return {"matches": matches[:10], "count": len(matches), "source": "fresh"}
-    return {"matches": [], "count": 0, "message": f"No chats found matching '{query}'."}
+    return matches
 
 
 @mcp.tool(name="send-chat-message")

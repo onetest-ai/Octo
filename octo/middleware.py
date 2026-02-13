@@ -188,12 +188,37 @@ class ToolErrorMiddleware(AgentMiddleware):
         tool_args = request.tool_call.get("args", {})
         logger.warning("Tool %s failed: %s: %s", tool_name, type(e).__name__, e)
 
+        # Fast path: detect common Bedrock truncation issue where content
+        # parameter gets cut off.  No LLM call needed — return actionable hint.
+        fast = self._fast_diagnose(tool_name, tool_args, e)
+        if fast:
+            return ToolMessage(
+                content=fast,
+                tool_call_id=request.tool_call["id"],
+            )
+
         explanation = self._explain(tool_name, tool_args, e)
 
         return ToolMessage(
             content=explanation,
             tool_call_id=request.tool_call["id"],
         )
+
+    @staticmethod
+    def _fast_diagnose(tool_name: str, tool_args: dict, e: Exception) -> str | None:
+        """Return a canned fix for well-known error patterns (no LLM needed)."""
+        # write_file with missing content — Bedrock output truncation
+        if tool_name == "write_file" and "content" in str(e) and "Field required" in str(e):
+            return (
+                f"[Tool error] write_file failed: the 'content' parameter is missing "
+                f"— this usually happens when the model output was truncated "
+                f"(common with Bedrock). "
+                f"Fix: write the content in SMALLER CHUNKS. "
+                f"Split into multiple write_file calls of ~2000 chars each. "
+                f"Use 'edit_file' to append subsequent chunks."
+            )
+
+        return None
 
     # -- error explanation via low-tier LLM --
 

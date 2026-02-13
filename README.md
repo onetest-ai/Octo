@@ -251,6 +251,37 @@ Available to all agents (configurable per agent via `tools:` in AGENT.md):
 | `Bash` | Execute shell commands |
 | `claude_code` | Delegate to Claude Code CLI (`claude -p`) |
 
+### Virtual Persona
+
+AI-powered digital twin that monitors Teams conversations and responds on your behalf.
+
+**How it works:** The VP poller checks Teams chats every N seconds (configurable). For each chat with new messages, it aggregates all unprocessed messages into one batch, classifies confidence, and routes:
+
+| Decision | Confidence | Action |
+|---|---|---|
+| **respond** | >=80% | Auto-reply in your voice via Teams |
+| **disclaim** | 60-79% | Reply with disclaimer caveat |
+| **escalate** | <60% | Silent notification to you (thread locked) |
+| **monitor** | any (non-allowed users) | Silent notification, no reply |
+| **skip** | n/a | Acknowledgments, chatter — ignored |
+
+**Smart behaviors:**
+- **Message aggregation** — Multiple consecutive messages are batched into one response (no spam)
+- **1-on-1 boost** — Direct messages get +15% confidence (people expect replies in DMs)
+- **Group chat filtering** — Only processes messages that @mention you
+- **Already-answered detection** — Skips messages before your last reply in a thread
+- **Inactive chat skip** — No API calls for chats without new messages since last poll
+- **Engagement tracking** — Threads where you've never engaged get lower confidence
+- **Persona formatting** — Raw answers are rewritten in your communication style with language-appropriate tone
+
+**Telegram integration:**
+- Escalation/monitor notifications arrive with emoji categorization and confidence bars
+- Reply to a notification to send your response to the Teams chat
+- Reply "ignore" to mute a chat permanently
+- Thread delegation auto-releases after you reply
+
+**Data directory:** `.octo/virtual-persona/` — system-prompt.md, access-control.yaml, profiles.json, knowledge/, audit.jsonl, stats.json
+
 ### Voice
 
 ElevenLabs TTS integration. Enable with `/voice on` or `--voice` flag. Telegram voice messages are transcribed via Whisper and replied to with voice.
@@ -337,9 +368,15 @@ TELEGRAM_BOT_TOKEN=...
 TELEGRAM_OWNER_ID=...
 
 # Heartbeat — proactive check-ins
-HEARTBEAT_INTERVAL=30m
+HEARTBEAT_INTERVAL=30m        # supports: 30s, 2m, 1h, or bare 1800 (seconds)
 HEARTBEAT_ACTIVE_HOURS_START=08:00
 HEARTBEAT_ACTIVE_HOURS_END=22:00
+
+# Virtual Persona — Teams digital twin
+VP_ENABLED=true
+VP_POLL_INTERVAL=2m           # supports: 30s, 2m, 1h, or bare 120 (seconds)
+VP_ACTIVE_HOURS_START=08:00
+VP_ACTIVE_HOURS_END=22:00
 
 # Voice (ElevenLabs TTS)
 ELEVENLABS_API_KEY=...
@@ -382,6 +419,7 @@ GitHub Models auto-routes to the right LangChain class based on the model name:
 | `/profile [name]` | Show/switch model profile |
 | `/heartbeat [test]` | Heartbeat status or force a tick |
 | `/cron [cmd]` | Scheduled tasks (list/add/remove/pause/resume) |
+| `/vp [cmd]` | Virtual Persona (status/allow/block/ignore/release/sync/persona/stats) |
 | `/create-agent` | AI-assisted agent creation wizard |
 | `/voice on\|off` | Toggle TTS |
 | `/model <name>` | Switch model |
@@ -410,10 +448,16 @@ Telegram Bot   ←──────→│  (create_supervisor) │←───�
                         │                      │
 Heartbeat      ────────→│    asyncio.Lock      │←───→ MCP Tools (.mcp.json)
 Cron Scheduler ────────→│                      │←───→ Built-in Tools
-                        └──────────────────────┘      Todo / State / Memory / File tools
+VP Poller      ────────→│                      │      Todo / State / Memory / File tools
+                        └──────────────────────┘
+                               ↑
+                        ┌──────┴───────┐
+                        │  VP Graph    │←───→ Teams (via MCP)
+                        │ (StateGraph) │
+                        └──────────────┘
 ```
 
-All transports share the same conversation thread and graph lock. The supervisor routes to specialist agents based on the request, manages task plans, writes memories, schedules tasks, and sends files.
+All transports share the same conversation thread and graph lock. The supervisor routes to specialist agents based on the request, manages task plans, writes memories, schedules tasks, and sends files. The VP graph runs independently — it classifies incoming Teams messages, delegates to the supervisor for knowledge work, then reformats answers in the user's persona.
 
 ## Contributing
 

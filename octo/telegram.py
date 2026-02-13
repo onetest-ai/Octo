@@ -226,6 +226,8 @@ class TelegramTransport:
         self.callbacks = callbacks or [] # LangChain callbacks (e.g. CLI tool panels)
         self.graph_lock = graph_lock     # shared lock to prevent races with heartbeat/cron
         self._app: Application | None = None
+        # VP notification tracking: telegram_msg_id → {teams_chat_id, teams_message_id}
+        self._vp_notifications: dict[int, dict[str, str]] = {}
 
     async def _send_typing(self, chat_id: int, stop_event: asyncio.Event) -> None:
         """Keep sending 'typing' action until stop_event is set."""
@@ -431,6 +433,12 @@ class TelegramTransport:
         sender = self._sender_name(update)
         logger.info("Telegram message from %s: %s", sender, user_text[:100])
 
+        # --- VP reply routing: reply to a VP notification → send to Teams ---
+        reply_to = update.message.reply_to_message
+        if reply_to and reply_to.message_id in self._vp_notifications:
+            await self._handle_vp_reply(update, user_text)
+            return
+
         # Show in CLI console immediately
         if self.on_message:
             self.on_message(f"[{sender}] {user_text}")
@@ -459,6 +467,80 @@ class TelegramTransport:
             else:
                 logger.exception("Error handling Telegram message")
                 await update.message.reply_text("Something went wrong. Check the console.")
+
+    async def _handle_vp_reply(self, update: Update, text: str) -> None:
+        """Handle a reply to a VP escalation notification.
+
+        - Reply "ignore" → add Teams chat to VP ignore list + release delegation.
+        - Any other text → send to Teams as a response + release delegation.
+        """
+        reply_to = update.message.reply_to_message
+        info = self._vp_notifications.get(reply_to.message_id, {})
+        teams_chat_id = info.get("teams_chat_id", "")
+        teams_message_id = info.get("teams_message_id", "")
+
+        if not teams_chat_id:
+            await update.message.reply_text("Could not resolve Teams chat.")
+            return
+
+        from octo.config import VP_DIR
+        from octo.virtual_persona.access_control import AccessControl
+
+        ac = AccessControl(VP_DIR / "access-control.yaml")
+        cmd = text.strip().lower()
+
+        if cmd == "ignore":
+            ac.ignore_chat(teams_chat_id)
+            ac.release_thread(teams_chat_id)
+            await update.message.reply_text("Chat ignored and delegation released.")
+            logger.info("VP reply: ignored chat %s", teams_chat_id[:30])
+            return
+
+        # Send the reply to Teams
+        from octo.graph import get_mcp_tool
+        from octo.virtual_persona.poller import VPPoller
+
+        sent = False
+        if teams_message_id:
+            tool = get_mcp_tool("reply-to-chat-message")
+            if tool:
+                try:
+                    result = await tool.ainvoke({
+                        "chatId": teams_chat_id,
+                        "messageId": teams_message_id,
+                        "content": text,
+                    })
+                    data = VPPoller._parse_tool_result(result)
+                    if isinstance(data, dict) and "error" in data:
+                        logger.warning("VP reply-to failed: %s", data["error"])
+                    else:
+                        sent = True
+                except Exception as exc:
+                    logger.warning("VP reply-to failed: %s", exc)
+
+        if not sent:
+            tool = get_mcp_tool("send-chat-message")
+            if tool:
+                try:
+                    result = await tool.ainvoke({
+                        "chatId": teams_chat_id,
+                        "content": text,
+                    })
+                    data = VPPoller._parse_tool_result(result)
+                    if isinstance(data, dict) and "error" in data:
+                        await update.message.reply_text(f"Failed to send: {data['error']}")
+                        return
+                    sent = True
+                except Exception as exc:
+                    await update.message.reply_text(f"Failed to send: {exc}")
+                    return
+
+        if sent:
+            ac.release_thread(teams_chat_id)
+            await update.message.reply_text("Sent to Teams. Delegation released.")
+            logger.info("VP reply: sent to Teams chat %s", teams_chat_id[:30])
+        else:
+            await update.message.reply_text("No Teams MCP tools available.")
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming voice messages: transcribe → graph → voice reply."""
@@ -590,7 +672,7 @@ class TelegramTransport:
         chat_id = int(TELEGRAM_OWNER_ID)
 
         if source:
-            text = f"<b>[{source}]</b>\n\n{text}"
+            text = f"**[{source}]**\n\n{text}"
 
         for chunk in _split_message(text):
             html_chunk = _markdown_to_telegram_html(chunk)
@@ -604,6 +686,46 @@ class TelegramTransport:
                     await self._app.bot.send_message(chat_id=chat_id, text=chunk)
                 except Exception:
                     logger.exception("Failed to send proactive message to Telegram")
+
+    async def send_vp_notification(
+        self, text: str, teams_chat_id: str, teams_message_id: str,
+    ) -> None:
+        """Send a VP escalation/monitor notification and track it for reply routing.
+
+        When the user replies to this Telegram message, the reply text will be
+        forwarded to the Teams chat automatically.
+        """
+        if not self._app or not TELEGRAM_OWNER_ID:
+            return
+
+        chat_id = int(TELEGRAM_OWNER_ID)
+
+        sent_msg = None
+        for chunk in _split_message(text):
+            html_chunk = _markdown_to_telegram_html(chunk)
+            try:
+                sent_msg = await self._app.bot.send_message(
+                    chat_id=chat_id, text=html_chunk, parse_mode="HTML",
+                )
+            except Exception:
+                try:
+                    sent_msg = await self._app.bot.send_message(
+                        chat_id=chat_id, text=chunk,
+                    )
+                except Exception:
+                    logger.exception("Failed to send VP notification to Telegram")
+
+        # Track the last chunk's message_id for reply routing
+        if sent_msg:
+            self._vp_notifications[sent_msg.message_id] = {
+                "teams_chat_id": teams_chat_id,
+                "teams_message_id": teams_message_id,
+            }
+            # Cap map size to prevent unbounded growth
+            if len(self._vp_notifications) > 200:
+                oldest = list(self._vp_notifications)[:100]
+                for k in oldest:
+                    del self._vp_notifications[k]
 
     async def send_document(self, file_path: str, caption: str = "", chat_id: int | None = None) -> bool:
         """Send a file as a Telegram document.

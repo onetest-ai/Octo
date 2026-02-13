@@ -232,16 +232,33 @@ HEARTBEAT_PATH = PERSONA_DIR / "HEARTBEAT.md"
 # --- Cron ---
 CRON_PATH = OCTO_DIR / "cron.json"
 
+# --- Virtual Persona ---
+VP_DIR = OCTO_DIR / "virtual-persona"
+# VP_DIR.mkdir() is intentionally NOT called here — created lazily on first /vp enable
+VP_ENABLED = os.getenv("VP_ENABLED", "true").lower() in ("true", "1", "yes")
+VP_POLL_INTERVAL = os.getenv("VP_POLL_INTERVAL", "2m")
+VP_ACTIVE_START = os.getenv("VP_ACTIVE_HOURS_START", "08:00")
+VP_ACTIVE_END = os.getenv("VP_ACTIVE_HOURS_END", "22:00")
+VP_SELF_EMAILS = [
+    e.strip().lower()
+    for e in os.getenv("VP_SELF_EMAILS", "").split(",")
+    if e.strip()
+]
 
-def _parse_heartbeat_interval(spec: str) -> int:
-    """Parse heartbeat interval like '30m', '1h', '60s' into seconds."""
+
+def _parse_interval(spec: str) -> int:
+    """Parse heartbeat interval like '30m', '1h', '60s', or bare '120' (seconds)."""
     import re as _re
-    m = _re.match(r"^(\d+)\s*(s|m|h)$", spec.strip(), _re.I)
-    if not m:
-        return 1800  # default 30 minutes
-    val = int(m.group(1))
-    unit = m.group(2).lower()
-    return val * {"s": 1, "m": 60, "h": 3600}[unit]
+    spec = spec.strip()
+    m = _re.match(r"^(\d+)\s*(s|m|h)$", spec, _re.I)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2).lower()
+        return val * {"s": 1, "m": 60, "h": 3600}[unit]
+    # Bare number → treat as seconds
+    if spec.isdigit():
+        return int(spec)
+    return 1800  # default 30 minutes
 
 
 def _parse_time_str(spec: str):
@@ -251,9 +268,13 @@ def _parse_time_str(spec: str):
     return _time(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
 
 
-HEARTBEAT_INTERVAL_SECONDS = _parse_heartbeat_interval(HEARTBEAT_INTERVAL)
+HEARTBEAT_INTERVAL_SECONDS = _parse_interval(HEARTBEAT_INTERVAL)
 HEARTBEAT_ACTIVE_START_TIME = _parse_time_str(HEARTBEAT_ACTIVE_START)
 HEARTBEAT_ACTIVE_END_TIME = _parse_time_str(HEARTBEAT_ACTIVE_END)
+
+VP_POLL_INTERVAL_SECONDS = _parse_interval(VP_POLL_INTERVAL)
+VP_ACTIVE_START_TIME = _parse_time_str(VP_ACTIVE_START)
+VP_ACTIVE_END_TIME = _parse_time_str(VP_ACTIVE_END)
 
 # --- Voice ---
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")

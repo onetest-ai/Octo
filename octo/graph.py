@@ -56,7 +56,7 @@ def _save_todos_to_disk(todos: list[dict[str, str]]) -> None:
     """Persist todos to .octo/plans/plan_<datetime>.json."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     path = PLANS_DIR / f"plan_{ts}.json"
-    path.write_text(json.dumps(todos, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(todos, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 _todos: list[dict[str, str]] = _load_todos_from_disk()
@@ -78,7 +78,7 @@ def read_todos() -> str:
     """Read the current task plan."""
     if not _todos:
         return "No active plan."
-    return json.dumps(_todos, indent=2)
+    return json.dumps(_todos, indent=2, ensure_ascii=False)
 
 
 # --- STATE.md tool --------------------------------------------------------
@@ -267,6 +267,11 @@ def set_session_pool(pool: Any) -> None:
     """Register the MCPSessionPool for auto-reconnect on session errors."""
     global _session_pool
     _session_pool = pool
+
+
+def get_mcp_tool(name: str) -> Any | None:
+    """Return a registered MCP tool by exact name, or None."""
+    return _mcp_tool_registry.get(name)
 
 
 def _register_mcp_tools(tools_by_server: dict[str, list]) -> None:
@@ -697,6 +702,7 @@ def _build_deep_agents(
             name=cfg.name,
             system_prompt=cfg.system_prompt,
             backend=backend,
+            middleware=[ToolErrorMiddleware()],
         )
         deep_workers.append(agent)
     return deep_workers

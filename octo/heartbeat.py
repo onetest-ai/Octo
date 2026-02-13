@@ -200,7 +200,7 @@ class CronStore:
 
     def save(self, jobs: list[CronJob]) -> None:
         self._path.write_text(
-            json.dumps([j.to_dict() for j in jobs], indent=2) + "\n",
+            json.dumps([j.to_dict() for j in jobs], indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
 

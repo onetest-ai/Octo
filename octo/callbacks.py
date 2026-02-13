@@ -440,6 +440,12 @@ class OctiCallbackHandler(BaseCallbackHandler):
         elif "throttling" in error_lower or "serviceunav" in error_lower:
             user_message = "Service temporarily unavailable"
             hint = "The provider is overloaded. Wait a moment and try again."
+        elif "connection was closed" in error_lower or "connection reset" in error_lower or "broken pipe" in error_lower:
+            user_message = "Connection lost"
+            hint = "The LLM provider dropped the connection (possibly content policy). Auto-repair will fix the checkpoint."
+        elif "expected toolresult" in error_lower or "expected tool_result" in error_lower:
+            user_message = "Orphaned tool call in history"
+            hint = "A previous connection drop left corrupted state. Auto-repair is fixing this."
 
         console.print()
         if user_message:
@@ -497,6 +503,10 @@ class OctiCallbackHandler(BaseCallbackHandler):
             "connect timeout",                  # connection timeouts
             "rate limit", "too many requests",  # throttling
             "throttling", "serviceunav",        # service issues
+            "connection was closed",            # Bedrock connection drops
+            "connection reset", "broken pipe",  # network failures
+            "expected toolresult",              # orphaned tool_use (Bedrock)
+            "expected tool_result",             # orphaned tool_use (alt format)
         ]
         if any(phrase in error_lower for phrase in _SUPPRESSED):
             return
