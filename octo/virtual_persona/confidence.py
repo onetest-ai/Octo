@@ -34,10 +34,10 @@ RESPOND_THRESHOLD = 80
 DISCLAIM_THRESHOLD = 60
 
 _CLASSIFY_PROMPT = """\
-You are a confidence scorer for a virtual assistant that responds on behalf of Artem Rozumenko.
+You are a confidence scorer for a virtual assistant that responds on behalf of the user.
 
 Analyze the incoming message and determine:
-1. Whether this message expects or needs a response from Artem (or is just acknowledgment/chatter)
+1. Whether this message expects or needs a response from the user (or is just acknowledgment/chatter)
 2. How confident the virtual assistant should be in responding
 3. The topic category
 
@@ -272,7 +272,7 @@ def _format_thread_context(ctx: dict[str, Any] | None) -> str:
     if ctx.get("engagement") is not None:
         eng = ctx["engagement"]
         label = "high" if eng > 0.5 else "moderate" if eng > 0.2 else "low"
-        parts.append(f"Artem's engagement in this thread: {label} ({eng:.0%})")
+        parts.append(f"User's engagement in this thread: {label} ({eng:.0%})")
     if ctx.get("message_count"):
         parts.append(f"Thread messages: {ctx['message_count']}")
     return "\n".join(parts) if parts else "(no thread context available)"

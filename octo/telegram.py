@@ -471,8 +471,12 @@ class TelegramTransport:
     async def _handle_vp_reply(self, update: Update, text: str) -> None:
         """Handle a reply to a VP escalation notification.
 
-        - Reply "ignore" → add Teams chat to VP ignore list + release delegation.
-        - Any other text → send to Teams as a response + release delegation.
+        The reply is an instruction TO Octo, not the literal text to send.
+        For example: "tell her we'll meet next week" or "yes, proceed with option B".
+
+        Flow:
+        - Reply "ignore" → mute Teams chat + release delegation.
+        - Any other text → Octo processes as instruction → persona formats → sends to Teams.
         """
         reply_to = update.message.reply_to_message
         info = self._vp_notifications.get(reply_to.message_id, {})
@@ -496,51 +500,148 @@ class TelegramTransport:
             logger.info("VP reply: ignored chat %s", teams_chat_id[:30])
             return
 
-        # Send the reply to Teams
+        # The reply is an instruction to Octo — process it through the
+        # full pipeline: Octo supervisor → persona formatting → send to Teams.
+        status_msg = await update.message.reply_text("Processing...")
+
+        # Extract the original notification text for context
+        original_notification = reply_to.text or reply_to.caption or ""
+
+        try:
+            formatted = await self._process_vp_instruction(
+                instruction=text,
+                teams_chat_id=teams_chat_id,
+                notification_context=original_notification,
+            )
+        except Exception as exc:
+            logger.error("VP reply processing failed: %s", exc)
+            await status_msg.edit_text(f"Processing failed: {exc}")
+            return
+
+        if not formatted:
+            await status_msg.edit_text("Could not generate a response.")
+            return
+
+        # Send the formatted response to Teams
         from octo.graph import get_mcp_tool
         from octo.virtual_persona.poller import VPPoller
 
-        sent = False
-        if teams_message_id:
-            tool = get_mcp_tool("reply-to-chat-message")
-            if tool:
-                try:
-                    result = await tool.ainvoke({
-                        "chatId": teams_chat_id,
-                        "messageId": teams_message_id,
-                        "content": text,
-                    })
-                    data = VPPoller._parse_tool_result(result)
-                    if isinstance(data, dict) and "error" in data:
-                        logger.warning("VP reply-to failed: %s", data["error"])
-                    else:
-                        sent = True
-                except Exception as exc:
-                    logger.warning("VP reply-to failed: %s", exc)
+        tool = get_mcp_tool("send-chat-message")
+        if not tool:
+            await status_msg.edit_text("No Teams MCP tools available.")
+            return
 
-        if not sent:
-            tool = get_mcp_tool("send-chat-message")
-            if tool:
-                try:
-                    result = await tool.ainvoke({
-                        "chatId": teams_chat_id,
-                        "content": text,
-                    })
-                    data = VPPoller._parse_tool_result(result)
-                    if isinstance(data, dict) and "error" in data:
-                        await update.message.reply_text(f"Failed to send: {data['error']}")
-                        return
-                    sent = True
-                except Exception as exc:
-                    await update.message.reply_text(f"Failed to send: {exc}")
-                    return
+        try:
+            result = await tool.ainvoke({
+                "chatId": teams_chat_id,
+                "content": formatted,
+            })
+            data = VPPoller._parse_tool_result(result)
+            if isinstance(data, dict) and "error" in data:
+                await status_msg.edit_text(f"Failed to send: {data['error']}")
+                return
+        except Exception as exc:
+            await status_msg.edit_text(f"Failed to send: {exc}")
+            return
 
-        if sent:
-            ac.release_thread(teams_chat_id)
-            await update.message.reply_text("Sent to Teams. Delegation released.")
-            logger.info("VP reply: sent to Teams chat %s", teams_chat_id[:30])
-        else:
-            await update.message.reply_text("No Teams MCP tools available.")
+        ac.release_thread(teams_chat_id)
+        # Show what was sent
+        preview = formatted[:200] + ("..." if len(formatted) > 200 else "")
+        await status_msg.edit_text(f"Sent to Teams. Delegation released.\n\n{preview}")
+        logger.info("VP reply: sent to Teams chat %s", teams_chat_id[:30])
+
+    async def _process_vp_instruction(
+        self,
+        instruction: str,
+        teams_chat_id: str,
+        notification_context: str,
+    ) -> str:
+        """Process a VP reply instruction through Octo + persona formatting.
+
+        Takes the user's instruction (e.g. "tell her we'll meet next week"),
+        feeds it through Octo supervisor for substance, then persona-formats
+        the result into the user's voice.
+
+        Returns the formatted response text, or empty string on failure.
+        """
+        if not self.graph_app:
+            # Fallback: no Octo app available, just persona-format the instruction directly
+            return await self._persona_format_only(instruction)
+
+        octo_thread_id = f"vp:{teams_chat_id}"
+
+        # Build instruction with context from the original notification
+        prompt = (
+            "You are helping the user respond to a Teams message. "
+            "The user has read the escalation notification and replied with an instruction. "
+            "Generate the actual response to send to the colleague based on the user's instruction.\n\n"
+        )
+        if notification_context:
+            prompt += f"Original notification:\n{notification_context[:1500]}\n\n"
+        prompt += f"User's instruction: {instruction}\n\n"
+        prompt += (
+            "Generate a natural, complete response to send to the colleague. "
+            "Do NOT include any meta-commentary — just the response text itself."
+        )
+
+        config = {"configurable": {"thread_id": octo_thread_id}}
+
+        try:
+            if self.graph_lock:
+                await self.graph_lock.acquire()
+            try:
+                result = await self.graph_app.ainvoke(
+                    {"messages": [{"role": "user", "content": prompt}]},
+                    config=config,
+                )
+            finally:
+                if self.graph_lock:
+                    self.graph_lock.release()
+
+            # Extract last AI message
+            messages = result.get("messages", [])
+            raw = ""
+            for msg in reversed(messages):
+                content = getattr(msg, "content", "") if hasattr(msg, "content") else str(msg)
+                if content and hasattr(msg, "type") and msg.type == "ai":
+                    raw = content
+                    break
+            if not raw and messages:
+                last = messages[-1]
+                raw = getattr(last, "content", str(last))
+
+            if not raw:
+                return ""
+
+            # Persona format the raw answer
+            return await self._persona_format_only(raw)
+        except Exception as exc:
+            logger.error("VP instruction processing via Octo failed: %s", exc)
+            # Fallback: persona-format the instruction directly
+            return await self._persona_format_only(instruction)
+
+    async def _persona_format_only(self, text: str) -> str:
+        """Quick persona formatting without full Octo pipeline."""
+        try:
+            from octo.virtual_persona.graph import _load_persona_prompt
+            from octo.models import make_model
+
+            persona_prompt = _load_persona_prompt()
+            format_prompt = (
+                f"{persona_prompt}\n\n---\n"
+                f"Rewrite the following in the user's style. Keep it concise and natural. "
+                f"Do NOT add any preamble — just the reformatted text.\n\n"
+                f"Text:\n{text[:3000]}"
+            )
+            model = make_model(tier="low")
+            response = await model.ainvoke(format_prompt)
+            result = response.content.strip()
+            if "🤖" not in result:
+                result += " 🤖"
+            return result
+        except Exception as exc:
+            logger.warning("VP persona format fallback failed: %s", exc)
+            return text + " 🤖" if "🤖" not in text else text
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming voice messages: transcribe → graph → voice reply."""

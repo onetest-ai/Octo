@@ -25,7 +25,7 @@ def _load_persona_prompt() -> str:
         _persona_prompt = prompt_path.read_text(encoding="utf-8")
     else:
         _persona_prompt = (
-            "You are a virtual assistant representing Artem Rozumenko. "
+            "You are a virtual assistant representing the user. "
             "Rewrite the answer in a casual, direct, technical style. "
             "Keep it short. Add 🤖 at end."
         )
@@ -318,7 +318,18 @@ async def delegate_to_octo(state: dict[str, Any]) -> dict[str, Any]:
             "Incorporate any relevant findings into your answer.\n\n"
         )
 
-    query = octo_instruction + f"Colleague's message: {query}"
+    # Include recent conversation messages (critical for understanding context)
+    context_msgs = state.get("context") or []
+    if context_msgs:
+        octo_instruction += "Recent conversation history (most recent last):\n"
+        for cm in context_msgs:
+            role = cm.get("role", "user")
+            content = cm.get("content", "")
+            label = "You" if role == "assistant" else "Colleague"
+            octo_instruction += f"  {label}: {content}\n"
+        octo_instruction += "\n"
+
+    query = octo_instruction + f"Colleague's latest message: {query}"
 
     config = {
         "configurable": {
@@ -420,7 +431,7 @@ async def persona_format(state: dict[str, Any]) -> dict[str, Any]:
         f"{persona_prompt}\n\n"
         f"---\n"
         f"Tone for this person: {tone_instruction}\n\n"
-        f"Rewrite the following answer in Artem's style. Keep it concise and natural. "
+        f"Rewrite the following answer in the user's style. Keep it concise and natural. "
         f"Do NOT add any preamble — just the reformatted response text.\n\n"
         f"Raw answer:\n{raw[:3000]}"
     )
@@ -447,7 +458,7 @@ async def persona_format_disclaim(state: dict[str, Any]) -> dict[str, Any]:
     response = result.get("response", "")
     # Add disclaimer if not already present
     if "virtual assistant" not in response.lower() and "verify" not in response.lower():
-        response += "\n\n(virtual assistant responding — verify with real Artem if critical)"
+        response += "\n\n(virtual assistant responding — verify with the real person if critical)"
     return {"response": response}
 
 

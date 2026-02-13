@@ -678,31 +678,6 @@ async def send_chat_message(
     }
 
 
-@mcp.tool(name="reply-to-chat-message")
-async def reply_to_chat_message(
-    chatId: str, messageId: str, content: str, contentType: str = "text"
-) -> dict[str, Any]:
-    """Reply to a specific message in a Teams chat.
-
-    Args:
-        chatId: The chat ID.
-        messageId: The message ID to reply to.
-        content: Reply content (text or HTML).
-        contentType: 'text' or 'html' (default: 'text').
-    """
-    body = {"body": {"contentType": contentType, "content": content}}
-    data = await _graph_post(
-        auth, f"/chats/{chatId}/messages/{messageId}/replies", body
-    )
-    if "error" in data:
-        return data
-    return {
-        "status": "sent",
-        "messageId": data.get("id"),
-        "createdDateTime": data.get("createdDateTime"),
-    }
-
-
 @mcp.tool(name="list-joined-teams")
 async def list_joined_teams() -> dict[str, Any]:
     """List Teams you belong to."""

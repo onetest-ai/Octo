@@ -456,28 +456,21 @@ class VPPoller:
             return []
 
     async def _send_response(self, chat_id: str, message_id: str, text: str) -> None:
-        """Send a response via Teams MCP (reply to message)."""
-        from octo.graph import get_mcp_tool
+        """Send a response via Teams MCP.
 
-        # Try reply-to first, fall back to send
-        tool = get_mcp_tool("reply-to-chat-message")
-        if tool:
-            try:
-                await tool.ainvoke({
-                    "chatId": chat_id,
-                    "messageId": message_id,
-                    "message": text,
-                })
-                return
-            except Exception as exc:
-                logger.warning("VP: reply-to failed, trying send: %s", exc)
+        Uses send-chat-message (not reply-to) because the Graph API
+        /replies endpoint returns 405 for many chat types.
+        """
+        from octo.graph import get_mcp_tool
 
         tool = get_mcp_tool("send-chat-message")
         if tool:
             try:
-                await tool.ainvoke({"chatId": chat_id, "message": text})
+                await tool.ainvoke({"chatId": chat_id, "content": text})
             except Exception as exc:
                 logger.error("VP: failed to send response to chat %s: %s", chat_id, exc)
+        else:
+            logger.warning("VP: send-chat-message tool not available")
 
     async def _fetch_chat_members(self, chat_id: str) -> list[dict]:
         """Fetch chat members for profile enrichment."""
