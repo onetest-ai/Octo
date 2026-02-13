@@ -35,6 +35,7 @@ dependencies = [
     "pyyaml",
     "prompt_toolkit>=3.0",
     "deepagents",
+    "msal",
 ]
 
 [project.scripts]

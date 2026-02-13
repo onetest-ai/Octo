@@ -86,8 +86,8 @@ async def _chat_loop(
 
     from octo import ui
     from octo.callbacks import create_cli_callback
-    from octo.graph import build_graph, context_info, read_todos, set_telegram_transport
-    from octo.loaders.mcp_loader import create_mcp_client, filter_tools, get_mcp_configs, get_tool_filters, validate_tool_schemas
+    from octo.graph import build_graph, context_info, read_todos, set_session_pool, set_telegram_transport
+    from octo.loaders.mcp_loader import MCPSessionPool, create_mcp_client, filter_tools, get_mcp_configs, get_tool_filters, validate_tool_schemas
     from octo.loaders.skill_loader import load_skills
     from octo.models import make_model, resolve_model_name, _detect_provider
     from octo.sessions import save_session, get_last_session
@@ -115,17 +115,32 @@ async def _chat_loop(
     # Persist session immediately
     save_session(thread_id, model=active_model)
 
+    # Persistent session pool for STDIO MCP servers
+    session_pool = MCPSessionPool()
+
     # Load MCP servers + build graph (reloadable via /mcp reload)
     async def _load_mcp_servers():
         """Load MCP servers, return (flat_tools, tools_by_server)."""
-        configs = get_mcp_configs()
-        filters = get_tool_filters()
+        try:
+            configs = get_mcp_configs()
+            filters = get_tool_filters()
+        except Exception as e:
+            ui.print_error(
+                f"Failed to parse .mcp.json: {e}\n"
+                "  Fix the JSON syntax and run /mcp reload"
+            )
+            return [], {}
         tools_flat = []
         tools_map: dict[str, list] = {}
         for sname, scfg in configs.items():
             try:
-                client = create_mcp_client({sname: scfg})
-                stools = await client.get_tools()
+                if scfg.get("transport") == "stdio":
+                    # Persistent session — subprocess stays alive
+                    stools = await session_pool.connect(sname, scfg)
+                else:
+                    # HTTP/SSE — stateless, ephemeral per-call is fine
+                    client = create_mcp_client({sname: scfg})
+                    stools = await client.get_tools()
                 all_count = len(stools)
                 stools = filter_tools(stools, sname, filters)
                 stools = validate_tool_schemas(stools, sname)
@@ -133,18 +148,36 @@ async def _chat_loop(
                 if len(stools) < all_count:
                     ui.print_info(f"MCP '{sname}': {len(stools)}/{all_count} tools (filtered)")
                 tools_flat.extend(stools)
-            except Exception as e:
-                detail = str(e)
-                if hasattr(e, "exceptions"):
-                    detail = "; ".join(str(sub) for sub in e.exceptions)
-                ui.print_error(f"MCP server '{sname}': {detail}")
+            except KeyboardInterrupt:
+                raise
+            except BaseException as e:
+                # Build config context for the error explainer
+                cfg_summary = f"server={sname}, transport={scfg.get('transport', 'stdio')}"
+                if scfg.get("command"):
+                    cfg_summary += f", command={scfg['command']} {' '.join(scfg.get('args', []))}"
+                if scfg.get("url"):
+                    cfg_summary += f", url={scfg['url']}"
+                try:
+                    from octo.middleware import explain_error
+                    explanation = await explain_error(
+                        e,
+                        context=f"connecting to MCP server '{sname}'",
+                        details=cfg_summary,
+                    )
+                    ui.print_error(f"MCP server '{sname}': {explanation}")
+                except Exception:
+                    # If explainer itself fails, fall back to raw error
+                    ui.print_error(f"MCP server '{sname}': {e}")
         return tools_flat, tools_map
 
     mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
 
     try:
         # Build graph
-        app, agent_configs, skills = await build_graph(mcp_tools)
+        app, agent_configs, skills = await build_graph(mcp_tools, mcp_tools_by_server)
+
+        # Register session pool for auto-reconnect on dead STDIO sessions
+        set_session_pool(session_pool)
 
         # Wire live context bar into the toolbar
         ui.set_context_ref(context_info)
@@ -253,8 +286,9 @@ async def _chat_loop(
 
         async def _rebuild_graph():
             nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
+            await session_pool.close_all()  # Close old STDIO sessions before reload
             mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
-            app, agent_configs, skills = await build_graph(mcp_tools)
+            app, agent_configs, skills = await build_graph(mcp_tools, mcp_tools_by_server)
             # Update proactive runners with new graph
             heartbeat._app = app
             cron_scheduler._app = app
@@ -504,7 +538,8 @@ async def _chat_loop(
 
                 if user_input.startswith("/mcp"):
                     from octo.mcp_manager import (
-                        mcp_add_wizard, mcp_disable, mcp_enable, mcp_get_status, mcp_remove,
+                        mcp_add_wizard, mcp_disable, mcp_enable, mcp_get_status,
+                        mcp_install_wizard, mcp_registry_search, mcp_remove,
                     )
                     parts = user_input.split(maxsplit=2)
                     sub = parts[1] if len(parts) > 1 else ""
@@ -520,6 +555,33 @@ async def _chat_loop(
                             f"{len(mcp_tools_by_server)} server(s), "
                             f"{len(skills)} skills"
                         )
+                    elif sub == "find":
+                        query = arg.strip()
+                        if not query:
+                            ui.print_error("Usage: /mcp find <query>")
+                        else:
+                            try:
+                                ui.print_info(f"Searching MCP registry for '{query}'...")
+                                results = mcp_registry_search(query)
+                                if not results:
+                                    ui.print_info(f"No MCP servers found for '{query}'.")
+                                else:
+                                    ui.print_mcp_search_results(results, query)
+                            except Exception as e:
+                                ui.print_error(f"Registry search failed: {e}")
+                    elif sub == "install":
+                        if not arg:
+                            ui.print_error("Usage: /mcp install <server-name>")
+                            ui.print_info("Tip: use /mcp find <query> to search first.")
+                        else:
+                            name = mcp_install_wizard(arg.strip())
+                            if name:
+                                ui.print_info("Reloading MCP servers...")
+                                await _rebuild_graph()
+                                ui.print_info(
+                                    f"Reloaded: {len(mcp_tools)} tools from "
+                                    f"{len(mcp_tools_by_server)} server(s)"
+                                )
                     elif sub == "add":
                         name = mcp_add_wizard()
                         if name:
@@ -540,7 +602,8 @@ async def _chat_loop(
                             await _rebuild_graph()
                     else:
                         ui.print_error(
-                            "Usage: /mcp [add|remove <name>|disable <name>|enable <name>|reload]"
+                            "Usage: /mcp [find <query>|install <name>|add|remove <name>|"
+                            "disable <name>|enable <name>|reload]"
                         )
                     continue
 
@@ -1045,4 +1108,4 @@ async def _chat_loop(
             ui.print_info("Goodbye!")
 
     finally:
-        pass
+        await session_pool.close_all()

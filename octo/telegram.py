@@ -658,9 +658,18 @@ class TelegramTransport:
     async def stop(self) -> None:
         """Stop the Telegram bot."""
         if self._app:
-            await self._app.updater.stop()
-            await self._app.stop()
-            await self._app.shutdown()
+            try:
+                await self._app.updater.stop()
+            except BaseException:
+                logger.debug("Telegram updater stop error (ignored)", exc_info=True)
+            try:
+                await self._app.stop()
+            except BaseException:
+                logger.debug("Telegram app stop error (ignored)", exc_info=True)
+            try:
+                await self._app.shutdown()
+            except BaseException:
+                logger.debug("Telegram app shutdown error (ignored)", exc_info=True)
             logger.info("Telegram bot stopped")
 
 

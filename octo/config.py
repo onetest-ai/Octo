@@ -9,23 +9,61 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _default_workspace() -> Path:
+    """Return the platform-appropriate default workspace root.
+
+    The workspace root is the directory that *contains* ``.octo/``,
+    ``.env``, and ``.mcp.json``.
+
+    - ``OCTO_HOME`` env var overrides — points to the workspace root.
+    - POSIX default: ``~`` (state lives at ``~/.octo``).
+    - Windows default: ``%LOCALAPPDATA%/octo`` (state at
+      ``%LOCALAPPDATA%/octo/.octo``).
+    """
+    env = os.getenv("OCTO_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+
+    if os.name == "nt":
+        local = os.getenv("LOCALAPPDATA")
+        if local:
+            return Path(local) / "octo"
+        return Path.home() / "octo"
+
+    return Path.home()
+
+
 def _find_workspace() -> Path:
-    """Walk up from cwd to find directory containing .octo/ or .env."""
+    """Walk up from cwd to find directory containing .octo/ or .env.
+
+    Resolution order:
+    1. Walk up from cwd looking for an existing ``.octo/`` dir or ``.env`` file
+       (project-local workspace).
+    2. Fall back to the platform default (``~`` on POSIX,
+       ``%LOCALAPPDATA%/octo`` on Windows).  Overridable with ``OCTO_HOME``.
+    """
     p = Path.cwd()
     while p != p.parent:
         if (p / ".octo").is_dir() or (p / ".env").is_file():
             return p
         p = p.parent
-    # fallback: directory of this package's parent
-    return Path(__file__).resolve().parent.parent
+    # No project workspace found — use the user-global default.
+    ws = _default_workspace()
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
 
 
 WORKSPACE = _find_workspace()
-load_dotenv(WORKSPACE / ".env")
 
 # --- Internal storage (.octo/) ---
 OCTO_DIR = WORKSPACE / ".octo"
 OCTO_DIR.mkdir(exist_ok=True)
+
+# .env: prefer OCTO_DIR/.env (global install keeps everything under ~/.octo/),
+# then fall back to WORKSPACE/.env (project-local).  load_dotenv won't
+# override vars already set by the first call.
+load_dotenv(OCTO_DIR / ".env")
+load_dotenv(WORKSPACE / ".env")
 DB_PATH = OCTO_DIR / "octo.db"
 PERSONA_DIR = OCTO_DIR / "persona"
 MEMORY_DIR = OCTO_DIR / "memory"
@@ -45,6 +83,15 @@ SKILLS_REGISTRY_URL = os.getenv(
 SKILLS_CACHE_DIR = OCTO_DIR / "cache"
 SKILLS_CACHE_DIR.mkdir(exist_ok=True)
 SKILLS_CACHE_TTL = int(os.getenv("SKILLS_CACHE_TTL", "3600"))  # seconds
+
+# --- MCP Registry (official) ---
+MCP_REGISTRY_BASE_URL = os.getenv(
+    "MCP_REGISTRY_URL",
+    "https://registry.modelcontextprotocol.io",
+)
+MCP_REGISTRY_CACHE_DIR = OCTO_DIR / "cache" / "mcp-registry"
+MCP_REGISTRY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+MCP_REGISTRY_CACHE_TTL = int(os.getenv("MCP_REGISTRY_CACHE_TTL", "1800"))  # 30 min
 
 AGENTS_DIR = OCTO_DIR / "agents"
 AGENTS_DIR.mkdir(exist_ok=True)
@@ -160,7 +207,11 @@ def get_profile_tiers() -> dict[str, str]:
 
 
 # --- MCP ---
-MCP_CONFIG_PATH = WORKSPACE / ".mcp.json"
+# Prefer OCTO_DIR/.mcp.json (keeps global config inside ~/.octo/),
+# fall back to WORKSPACE/.mcp.json (project-local).
+_mcp_in_octo = OCTO_DIR / ".mcp.json"
+_mcp_in_ws = WORKSPACE / ".mcp.json"
+MCP_CONFIG_PATH = _mcp_in_octo if _mcp_in_octo.is_file() else _mcp_in_ws
 
 # --- Agent directories ---
 _extra = os.getenv("AGENT_DIRS", "")

@@ -139,11 +139,19 @@ def _build_auth_provider(
 
 
 def _parse_mcp_config(path: Path) -> dict[str, dict[str, Any]]:
-    """Read .mcp.json and convert to MultiServerMCPClient format."""
+    """Read .mcp.json and convert to MultiServerMCPClient format.
+
+    Returns an empty dict (with no crash) if the file is missing,
+    unreadable, or contains invalid JSON.
+    """
     if not path.is_file():
         return {}
 
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Failed to parse %s: %s", path, exc)
+        raise  # let caller handle with user-friendly message
     servers = raw.get("mcpServers", {})
 
     configs: dict[str, dict[str, Any]] = {}
@@ -316,3 +324,68 @@ def create_mcp_client(configs: dict[str, dict[str, Any]] | None = None) -> Multi
     if configs is None:
         configs = get_mcp_configs()
     return MultiServerMCPClient(configs)
+
+
+class MCPSessionPool:
+    """Keeps STDIO MCP servers alive as persistent sessions.
+
+    Instead of spawning a new subprocess per tool call, opens a persistent
+    ``ClientSession`` for each STDIO server and keeps it alive for the CLI
+    session lifetime.  Tools are bound to the live session so every
+    ``ainvoke()`` reuses the same subprocess.
+
+    Configs are stored so that dead sessions can be reconnected automatically.
+    """
+
+    def __init__(self) -> None:
+        self._stacks: dict[str, Any] = {}
+        self._configs: dict[str, dict[str, Any]] = {}
+
+    async def connect(self, name: str, config: dict[str, Any]) -> list:
+        """Open persistent session, return LangChain tools bound to it."""
+        from contextlib import AsyncExitStack
+
+        from langchain_mcp_adapters.sessions import create_session
+        from langchain_mcp_adapters.tools import load_mcp_tools
+
+        stack = AsyncExitStack()
+        try:
+            session = await stack.enter_async_context(create_session(config))
+            await session.initialize()
+            tools = await load_mcp_tools(session, server_name=name)
+        except BaseException:
+            # Clean up the stack so dying subprocess doesn't leak cancel scopes
+            try:
+                await stack.aclose()
+            except BaseException:
+                pass
+            raise
+        self._stacks[name] = stack
+        self._configs[name] = config
+        return tools
+
+    async def reconnect(self, name: str) -> list:
+        """Close a dead session and open a fresh one.
+
+        Returns new tools bound to the fresh session, or empty list
+        if the server config is unknown or reconnection fails.
+        """
+        config = self._configs.get(name)
+        if not config:
+            return []
+        await self.close(name)
+        return await self.connect(name, config)
+
+    async def close(self, name: str) -> None:
+        """Close a specific server's persistent session."""
+        stack = self._stacks.pop(name, None)
+        if stack:
+            try:
+                await stack.aclose()
+            except BaseException:
+                pass
+
+    async def close_all(self) -> None:
+        """Close all persistent sessions (for shutdown or reload)."""
+        for name in list(self._stacks):
+            await self.close(name)

@@ -484,7 +484,40 @@ def print_mcp_status(servers: list[dict]) -> None:
         table.add_row(s["name"], s["type"], tools, status, s["detail"])
 
     console.print(table)
-    console.print("  [dim]Tip: /mcp add, /mcp disable <name>, /mcp enable <name>, /mcp reload[/dim]")
+    console.print("  [dim]Tip: /mcp find <query>, /mcp install <name>, /mcp add, /mcp disable <name>, /mcp reload[/dim]")
+    console.print()
+
+
+def print_mcp_search_results(results: list[dict], query: str) -> None:
+    """Print MCP registry search results in a Rich table."""
+    table = Table(
+        title=f"MCP Registry: '{query}' ({len(results)} results)",
+        border_style="blue",
+        box=box.SIMPLE,
+        header_style="bold blue",
+        padding=(0, 1),
+    )
+    table.add_column("Server Name", style="bold yellow", max_width=45)
+    table.add_column("Ver", style="dim", no_wrap=True, width=8)
+    table.add_column("Type", style="cyan", no_wrap=True, width=12)
+    table.add_column("Description", max_width=50)
+
+    for r in results:
+        if r.get("registry_types"):
+            type_str = ", ".join(r["registry_types"])
+        elif r.get("has_remotes"):
+            type_str = "remote"
+        else:
+            type_str = "?"
+
+        table.add_row(
+            r["name"],
+            r.get("version", "?"),
+            type_str,
+            r.get("description", ""),
+        )
+    console.print(table)
+    console.print("  [dim]Install: /mcp install <server-name>[/dim]")
     console.print()
 
 
@@ -542,7 +575,7 @@ def print_help() -> None:
         ("/skills [cmd]", "Skills (list/search/install/remove/import/find)"),
         ("/tools", "List MCP tools by server"),
         ("/call [srv] <tool>", "Call MCP tool directly: /call github get_me"),
-        ("/mcp [cmd]", "MCP servers (add/remove/disable/enable/reload)"),
+        ("/mcp [cmd]", "MCP servers (find/install/add/remove/disable/enable/reload)"),
         ("/projects", "Show project registry"),
         ("/sessions [id]", "List sessions or switch to one"),
         ("/plan", "Show current task plan with progress"),

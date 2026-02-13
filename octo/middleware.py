@@ -1,6 +1,8 @@
-"""Custom middleware for Octo agents.
+"""Custom middleware and error handling for Octo agents.
 
 Provides:
+- ``explain_error()`` — reusable async helper that asks a cheap LLM to explain
+  any error with context and suggest remediation steps.
 - ``ToolErrorMiddleware``  — catches tool execution errors and explains them
   via a low-tier LLM instead of crashing the agent.
 - ``ToolResultLimitMiddleware`` — truncates oversized tool results before they
@@ -19,6 +21,93 @@ from langchain.tools.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Reusable error explainer — asks a cheap LLM to diagnose any error
+# ---------------------------------------------------------------------------
+
+_ERROR_EXPLAINER_PROMPT = """\
+You are a concise technical troubleshooter for the Octo CLI assistant.
+
+An error occurred during: {context}
+
+Error type: {error_type}
+Error message:
+{error_message}
+
+Full traceback (if available):
+{traceback}
+
+Configuration / environment details:
+{details}
+
+Instructions:
+1. Explain what went wrong in 1-2 sentences (be specific, not generic).
+2. List 1-3 concrete steps the user can take to fix it.
+3. If this looks like a transient issue, say so.
+Keep it under 100 words total. No markdown headers. Plain text only."""
+
+# Lazily initialised shared model for error explanations
+_error_model = None
+
+
+def _get_error_model():
+    global _error_model
+    if _error_model is None:
+        from octo.models import make_model
+        _error_model = make_model(tier="low")
+    return _error_model
+
+
+async def explain_error(
+    error: BaseException,
+    *,
+    context: str = "unknown operation",
+    details: str = "",
+) -> str:
+    """Ask a cheap LLM to explain an error and suggest fixes.
+
+    Parameters
+    ----------
+    error:
+        The exception that was caught.
+    context:
+        Human-readable description of what was happening when the error
+        occurred (e.g. "connecting to MCP server 'outlook'").
+    details:
+        Extra context like config snippets, env vars, or command args
+        that help the LLM diagnose the issue.
+
+    Returns a short plain-text explanation suitable for printing to
+    the user.  Falls back to the raw error string if the LLM call
+    itself fails.
+    """
+    import traceback as tb_mod
+
+    tb_str = "".join(tb_mod.format_exception(type(error), error, error.__traceback__))
+    # Truncate long tracebacks / details to avoid blowing context
+    tb_str = tb_str[-2000:] if len(tb_str) > 2000 else tb_str
+    details = details[-1000:] if len(details) > 1000 else details
+
+    prompt = _ERROR_EXPLAINER_PROMPT.format(
+        context=context,
+        error_type=type(error).__name__,
+        error_message=str(error)[:500],
+        traceback=tb_str or "(not available)",
+        details=details or "(none)",
+    )
+    try:
+        model = _get_error_model()
+        response = await model.ainvoke(prompt)
+        return response.content
+    except Exception:
+        logger.debug("Error explainer LLM failed, returning raw error", exc_info=True)
+        return f"{type(error).__name__}: {error}"
+
+
+# ---------------------------------------------------------------------------
+# Tool error middleware
+# ---------------------------------------------------------------------------
 
 # Prompt template for the error-explaining LLM
 ERROR_EXPLANATION_PROMPT = """\

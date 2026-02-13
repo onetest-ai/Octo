@@ -36,16 +36,6 @@ def _is_heartbeat_ok(text: str) -> bool:
 
 # ── Interval / time helpers ──────────────────────────────────────────
 
-def _parse_interval(spec: str) -> timedelta:
-    """Parse interval spec like '30m', '2h', '1d' into timedelta."""
-    match = re.match(r"^(\d+)\s*(m|min|minutes?|h|hours?|d|days?|s|seconds?)$", spec.strip(), re.I)
-    if not match:
-        raise ValueError(f"Invalid interval: {spec!r}")
-    value = int(match.group(1))
-    unit = match.group(2)[0].lower()
-    return timedelta(**{"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}[unit] + "=" + str(value))
-
-
 def _parse_interval_td(spec: str) -> timedelta:
     """Wrapper that builds timedelta cleanly."""
     match = re.match(r"^(\d+)\s*(s|m|h|d)", spec.strip(), re.I)
