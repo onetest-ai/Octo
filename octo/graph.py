@@ -191,9 +191,12 @@ def _build_pre_model_hook(model_name: str):
                     "the context window. Some history may be missing.]"
                 )
             )
-            return {"messages": [marker] + trimmed}
+            # Use llm_input_messages to send trimmed context to LLM
+            # without accidentally growing the state via add_messages reducer.
+            # State cleanup is handled by /compact and auto_compact in retry.py.
+            return {"llm_input_messages": [marker] + trimmed}
 
-        return {"messages": messages}
+        return {"llm_input_messages": messages}
 
     return pre_model_hook
 
@@ -578,6 +581,165 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
     return "\n\n---\n\n".join(parts)
 
 
+# --- Custom handoff tools with message truncation -------------------------
+
+# Max messages to forward when handing off to a worker.
+# Workers only need the recent context, not the full session history.
+_HANDOFF_MAX_MESSAGES = 20
+_HANDOFF_MAX_CHARS_PER_MSG = 30_000  # same as SUPERVISOR_MSG_CHAR_LIMIT
+
+
+def _build_truncating_handoff_tools(agent_names: list[str]) -> list:
+    """Create custom handoff tools that truncate messages before forwarding.
+
+    The default ``create_handoff_tool`` passes ``state["messages"]`` — the
+    ENTIRE supervisor state — to the worker.  Over a long session this can
+    be 500K+ chars, causing the worker's LLM to choke.
+
+    Our custom tools:
+    1. Truncate individual message content to ``_HANDOFF_MAX_CHARS_PER_MSG``
+    2. Keep only the last ``_HANDOFF_MAX_MESSAGES`` messages
+    3. Always preserve the original user message (first HumanMessage)
+
+    ``create_supervisor`` detects these tools via their metadata
+    (``METADATA_KEY_HANDOFF_DESTINATION``) and skips auto-creating
+    default handoff tools.
+    """
+    from langgraph_supervisor.handoff import (
+        METADATA_KEY_HANDOFF_DESTINATION,
+        _normalize_agent_name,
+        create_handoff_tool,
+    )
+
+    tools = []
+    for agent_name in agent_names:
+        # Start with the standard handoff tool (correct annotations/metadata)
+        base_tool = create_handoff_tool(agent_name=agent_name)
+
+        # Wrap it: intercept the call, truncate state messages, then delegate
+        original_func = base_tool.func  # sync inner function
+
+        def _make_wrapper(orig_fn, a_name):
+            """Build a wrapper that truncates messages before handoff."""
+            from langchain_core.messages import AIMessage, HumanMessage
+
+            def wrapper(state, tool_call_id):
+                messages = state.get("messages", [])
+
+                # --- Truncate individual messages ---
+                truncated = []
+                for msg in messages:
+                    content = getattr(msg, "content", None)
+                    if isinstance(content, str) and len(content) > _HANDOFF_MAX_CHARS_PER_MSG:
+                        msg = msg.model_copy(update={
+                            "content": content[:_HANDOFF_MAX_CHARS_PER_MSG]
+                            + f"\n\n... [truncated from {len(content):,} chars]"
+                        })
+                    elif isinstance(content, list):
+                        total = sum(len(str(p)) for p in content)
+                        if total > _HANDOFF_MAX_CHARS_PER_MSG:
+                            parts, running = [], 0
+                            for part in content:
+                                plen = len(str(part))
+                                if running + plen > _HANDOFF_MAX_CHARS_PER_MSG:
+                                    break
+                                parts.append(part)
+                                running += plen
+                            msg = msg.model_copy(update={"content": parts})
+                    truncated.append(msg)
+
+                # --- Keep only recent messages ---
+                if len(truncated) > _HANDOFF_MAX_MESSAGES:
+                    first_human = next(
+                        (m for m in truncated if isinstance(m, HumanMessage)),
+                        None,
+                    )
+                    recent = truncated[-_HANDOFF_MAX_MESSAGES:]
+                    if first_human and first_human not in recent:
+                        recent = [first_human] + recent[1:]
+                    truncated = recent
+
+                orig_chars = sum(len(str(getattr(m, "content", ""))) for m in messages)
+                new_chars = sum(len(str(getattr(m, "content", ""))) for m in truncated)
+                if new_chars < orig_chars:
+                    logger.info(
+                        "Handoff to %s: truncated %d→%d chars (%d→%d msgs)",
+                        a_name, orig_chars, new_chars,
+                        len(messages), len(truncated),
+                    )
+                    # Dump dropped messages so the agent can recover context
+                    dropped = [m for m in messages if m not in truncated]
+                    if dropped:
+                        ctx_path = _dump_handoff_context(a_name, dropped)
+                        if ctx_path:
+                            # Prepend a hint message so the agent knows
+                            from langchain_core.messages import SystemMessage
+                            hint = SystemMessage(content=(
+                                f"[Earlier conversation context was trimmed. "
+                                f"Full context saved to: {ctx_path} — "
+                                f"use the Read tool if you need it.]"
+                            ))
+                            truncated = [hint] + truncated
+
+                # Call original handoff with truncated state
+                patched_state = {**state, "messages": truncated}
+                return orig_fn(patched_state, tool_call_id)
+
+            return wrapper
+
+        # Replace the inner function but keep all tool metadata intact
+        base_tool.func = _make_wrapper(original_func, agent_name)
+        tools.append(base_tool)
+
+    return tools
+
+
+def _dump_handoff_context(agent_name: str, messages: list) -> str | None:
+    """Save trimmed conversation context to workspace for agent recovery.
+
+    When the handoff tool truncates messages, the dropped content is saved
+    to ``.octo/workspace/<date>/handoff-context-<agent>-<ts>.md`` so the
+    agent can read it back via the Read tool if it needs prior context.
+
+    Returns the file path on success, None on failure.
+    """
+    from octo.config import RESEARCH_WORKSPACE
+
+    try:
+        today = date.today().isoformat()
+        workspace = RESEARCH_WORKSPACE / today
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now(timezone.utc).strftime("%H%M%S")
+        path = workspace / f"handoff-context-{agent_name}-{ts}.md"
+
+        lines = [f"# Handoff Context for {agent_name}", ""]
+        for msg in messages:
+            role = getattr(msg, "type", "unknown")
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    p.get("text", str(p)) if isinstance(p, dict) else str(p)
+                    for p in content
+                )
+            if not content or not str(content).strip():
+                continue
+            # Cap each message at 2K chars in the dump to keep it manageable
+            text = str(content).strip()
+            if len(text) > 2000:
+                text = text[:2000] + "..."
+            lines.append(f"## [{role}]")
+            lines.append(text)
+            lines.append("")
+
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info("Saved handoff context to %s", path)
+        return str(path)
+    except Exception:
+        logger.warning("Failed to save handoff context", exc_info=True)
+        return None
+
+
 async def build_graph(
     mcp_tools: list | None = None,
     mcp_tools_by_server: dict[str, list] | None = None,
@@ -748,13 +910,31 @@ async def build_graph(
            write_memory, read_memories, update_long_term_memory,
            schedule_task, send_file]
     )
-    supervisor_tools = TruncatingToolNode(supervisor_tool_list, handle_tool_errors=True)
+
+    # --- Custom handoff tools with message truncation -------------------------
+    # The default create_handoff_tool passes the ENTIRE supervisor state to
+    # workers.  Over a long session the state accumulates hundreds of thousands
+    # of chars, which causes Bedrock's "model identifier is invalid" error
+    # when the worker's LLM tries to process the oversized context.
+    #
+    # Fix: create custom handoff tools that truncate messages before
+    # forwarding.  create_supervisor detects these (via metadata) and skips
+    # auto-creation of default handoff tools.
+    all_workers = project_workers + octo_workers + deep_workers
+    handoff_tools = _build_truncating_handoff_tools(
+        [w.name for w in all_workers],
+    )
+
+    supervisor_tools = TruncatingToolNode(
+        supervisor_tool_list + handoff_tools,
+        handle_tool_errors=True,
+    )
 
     from octo.models import resolve_model_name
     hook = _build_pre_model_hook(resolve_model_name())
 
     workflow = create_supervisor(
-        agents=project_workers + octo_workers + deep_workers,
+        agents=all_workers,
         model=supervisor_model,
         tools=supervisor_tools,
         prompt=prompt,
