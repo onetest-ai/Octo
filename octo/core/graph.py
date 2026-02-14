@@ -744,6 +744,7 @@ async def build_graph(
     mcp_tools: list | None = None,
     mcp_tools_by_server: dict[str, list] | None = None,
     checkpointer: Any = None,
+    storage: Any = None,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
 
@@ -752,6 +753,8 @@ async def build_graph(
         mcp_tools_by_server: MCP tools grouped by server name.
         checkpointer: Optional LangGraph checkpointer. If None, creates
             a default AsyncSqliteSaver using DB_PATH.
+        storage: Optional StorageBackend instance. When provided, memory
+            and planning tools use it instead of hardcoded filesystem paths.
 
     Returns:
         Tuple of (compiled app, all agent configs, skills).
@@ -903,12 +906,22 @@ async def build_graph(
                     result = result.model_copy(update={"content": truncated})
             return result
 
+    # Use StorageBackend-backed tools when storage is provided (engine mode),
+    # otherwise use module-level tools with hardcoded paths (CLI mode).
+    if storage:
+        from octo.core.tools.memory import make_memory_tools
+        from octo.core.tools.planning import make_planning_tools
+        _mem_tools = make_memory_tools(storage)
+        _plan_tools = make_planning_tools(storage)
+    else:
+        _mem_tools = [write_memory, read_memories, update_long_term_memory]
+        _plan_tools = [write_todos, read_todos, update_state_md]
+
     supervisor_tool_list = (
         list(BUILTIN_TOOLS)
         + [find_tools, call_mcp_tool]
-        + [write_todos, read_todos, update_state_md, use_skill,
-           write_memory, read_memories, update_long_term_memory,
-           schedule_task, send_file]
+        + _plan_tools + [use_skill] + _mem_tools
+        + [schedule_task, send_file]
     )
 
     # --- Custom handoff tools with message truncation -------------------------

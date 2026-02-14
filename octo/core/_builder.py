@@ -120,6 +120,7 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         mcp_tools=mcp_tools,
         mcp_tools_by_server=mcp_tools_by_server,
         checkpointer=checkpointer,
+        storage=config.storage,
     )
     app = app_tuple[0]
 
