@@ -1,8 +1,21 @@
 """Octo core — embeddable agent engine.
 
-Public API:
-    from octo.core import OctoEngine, OctoConfig, StorageBackend
+Public API::
+
+    from octo.core import OctoEngine, OctoConfig
+    from octo.core.storage import StorageBackend, FilesystemStorage
+
+    config = OctoConfig(
+        llm_provider="anthropic",
+        llm_credentials={"api_key": "sk-..."},
+        storage=FilesystemStorage(root="/path/to/.octo"),
+    )
+    engine = OctoEngine(config)
+    response = await engine.invoke("Hello!", thread_id="conv-123")
 """
 from __future__ import annotations
 
-__all__: list[str] = []
+from octo.core.config import OctoConfig
+from octo.core.engine import OctoEngine, OctoResponse
+
+__all__ = ["OctoConfig", "OctoEngine", "OctoResponse"]
