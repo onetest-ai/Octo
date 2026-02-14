@@ -296,16 +296,43 @@ class ProjectConfig:
     config_dir: str  # the .claude/ directory
     env: dict[str, str] = field(default_factory=dict)  # extra env vars for claude -p
     agents: list[str] = field(default_factory=list)  # agent names in this project
+    # --- metadata (all optional) ---
+    description: str = ""  # short project description
+    repo_url: str = ""  # GitHub / GitLab / etc.
+    issues_url: str = ""  # Jira, GitHub Issues, Linear, etc.
+    tech_stack: list[str] = field(default_factory=list)  # ["python", "react", ...]
+    default_branch: str = ""  # e.g. "main", "master", "develop"
+    ci_url: str = ""  # Jenkins, GitHub Actions URL, etc.
+    docs_url: str = ""  # Confluence, wiki, readthedocs, etc.
+    tags: dict[str, str] = field(default_factory=dict)  # freeform key-value metadata
 
 
 def _project_to_dict(proj: ProjectConfig) -> dict:
-    return {
+    d: dict = {
         "name": proj.name,
         "path": proj.path,
         "config_dir": proj.config_dir,
         "env": proj.env,
         "agents": proj.agents,
     }
+    # Only persist non-empty metadata fields to keep JSON clean
+    if proj.description:
+        d["description"] = proj.description
+    if proj.repo_url:
+        d["repo_url"] = proj.repo_url
+    if proj.issues_url:
+        d["issues_url"] = proj.issues_url
+    if proj.tech_stack:
+        d["tech_stack"] = proj.tech_stack
+    if proj.default_branch:
+        d["default_branch"] = proj.default_branch
+    if proj.ci_url:
+        d["ci_url"] = proj.ci_url
+    if proj.docs_url:
+        d["docs_url"] = proj.docs_url
+    if proj.tags:
+        d["tags"] = proj.tags
+    return d
 
 
 def _project_from_dict(data: dict) -> ProjectConfig:
@@ -315,7 +342,90 @@ def _project_from_dict(data: dict) -> ProjectConfig:
         config_dir=data.get("config_dir", ""),
         env=data.get("env", {}),
         agents=data.get("agents", []),
+        description=data.get("description", ""),
+        repo_url=data.get("repo_url", ""),
+        issues_url=data.get("issues_url", ""),
+        tech_stack=data.get("tech_stack", []),
+        default_branch=data.get("default_branch", ""),
+        ci_url=data.get("ci_url", ""),
+        docs_url=data.get("docs_url", ""),
+        tags=data.get("tags", {}),
     )
+
+
+def _autodiscover_project_metadata(project_dir: Path) -> dict:
+    """Auto-detect metadata from a project directory.
+
+    Discovers: repo_url, default_branch, tech_stack, description.
+    Returns a dict of non-empty fields to merge into ProjectConfig.
+    """
+    import subprocess
+
+    meta: dict = {}
+
+    # --- git remote URL ---
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=project_dir, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            meta["repo_url"] = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # --- default branch ---
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=project_dir, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # refs/remotes/origin/main → main
+            meta["default_branch"] = result.stdout.strip().split("/")[-1]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # --- tech stack detection ---
+    stack: list[str] = []
+    markers = {
+        "pyproject.toml": "python", "setup.py": "python", "requirements.txt": "python",
+        "package.json": "javascript", "tsconfig.json": "typescript",
+        "Cargo.toml": "rust", "go.mod": "go", "pom.xml": "java",
+        "build.gradle": "java", "Gemfile": "ruby", "mix.exs": "elixir",
+        "Dockerfile": "docker", "docker-compose.yml": "docker",
+        "Makefile": "make", ".terraform": "terraform",
+    }
+    for filename, tech in markers.items():
+        if (project_dir / filename).exists() and tech not in stack:
+            stack.append(tech)
+    if stack:
+        meta["tech_stack"] = stack
+
+    # --- description from pyproject.toml or package.json ---
+    pyproject = project_dir / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            import tomllib
+            data = tomllib.loads(pyproject.read_text())
+            desc = data.get("project", {}).get("description", "")
+            if desc:
+                meta["description"] = desc
+        except Exception:
+            pass
+
+    if "description" not in meta:
+        pkg_json = project_dir / "package.json"
+        if pkg_json.is_file():
+            try:
+                data = json.loads(pkg_json.read_text())
+                desc = data.get("description", "")
+                if desc:
+                    meta["description"] = desc
+            except Exception:
+                pass
+
+    return meta
 
 
 def _seed_projects_from_agent_dirs() -> None:
@@ -332,6 +442,7 @@ def _seed_projects_from_agent_dirs() -> None:
             continue  # don't overwrite user edits
 
         agent_names = [md.stem for md in sorted(agent_dir.glob("*.md"))]
+        auto = _autodiscover_project_metadata(project_dir)
 
         proj = ProjectConfig(
             name=name,
@@ -339,6 +450,10 @@ def _seed_projects_from_agent_dirs() -> None:
             config_dir=str(config_dir),
             env={"CLAUDE_CONFIG_DIR": str(config_dir)},
             agents=agent_names,
+            description=auto.get("description", ""),
+            repo_url=auto.get("repo_url", ""),
+            tech_stack=auto.get("tech_stack", []),
+            default_branch=auto.get("default_branch", ""),
         )
         project_file.write_text(
             json.dumps(_project_to_dict(proj), indent=2) + "\n"
@@ -371,3 +486,63 @@ def get_project_for_agent(agent_name: str) -> ProjectConfig | None:
         if agent_name in proj.agents:
             return proj
     return None
+
+
+def reload_projects() -> dict[str, ProjectConfig]:
+    """Re-read all project JSON files from disk and refresh PROJECTS.
+
+    This is a *light* reload — it refreshes the in-memory dict so that
+    future ``claude_code`` calls and system-prompt builds pick up changes,
+    but does **not** rebuild the LangGraph graph.
+
+    Mutates the existing PROJECTS dict in-place so that all modules holding
+    a reference (e.g. ``from octo.config import PROJECTS``) see the update.
+    """
+    fresh = _load_projects()
+    PROJECTS.clear()
+    PROJECTS.update(fresh)
+    return PROJECTS
+
+
+import re as _re
+
+_PROJECT_NAME_RE = _re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
+
+def _validate_project_name(name: str) -> str | None:
+    """Return an error message if the project name is invalid, else None."""
+    if not name:
+        return "Project name cannot be empty."
+    if not _PROJECT_NAME_RE.match(name):
+        return (
+            f"Invalid project name '{name}'. "
+            "Use only letters, digits, hyphens, underscores, and dots."
+        )
+    if name in (".", ".."):
+        return f"Invalid project name '{name}'."
+    return None
+
+
+def save_project(proj: ProjectConfig) -> Path:
+    """Persist a ProjectConfig to disk and update the in-memory registry."""
+    err = _validate_project_name(proj.name)
+    if err:
+        raise ValueError(err)
+    project_file = PROJECTS_DIR / f"{proj.name}.json"
+    project_file.write_text(
+        json.dumps(_project_to_dict(proj), indent=2) + "\n"
+    )
+    PROJECTS[proj.name] = proj
+    return project_file
+
+
+def remove_project(name: str) -> bool:
+    """Remove a project from disk and the in-memory registry.
+
+    Returns True if the project existed and was removed.
+    """
+    project_file = PROJECTS_DIR / f"{name}.json"
+    if project_file.exists():
+        project_file.unlink()
+    removed = PROJECTS.pop(name, None) is not None
+    return removed

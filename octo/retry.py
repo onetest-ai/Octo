@@ -33,6 +33,10 @@ def _classify_error(error: BaseException) -> str | None:
         return "orphaned_tools"
     if "connection was closed" in msg or "connection reset" in msg or "broken pipe" in msg:
         return "connection_closed"
+    # Bedrock cross-region inference profiles can transiently return
+    # "model identifier is invalid" even for valid IDs — treat as transient.
+    if "model identifier is invalid" in msg:
+        return "connection_closed"
     return None
 
 

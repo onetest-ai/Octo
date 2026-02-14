@@ -581,9 +581,28 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
                 "Omit the `agent` parameter for general project work."
             )
 
+        # Build metadata section from project config
+        meta_lines: list[str] = []
+        if proj.description:
+            meta_lines.append(f"- **Description:** {proj.description}")
+        if proj.repo_url:
+            meta_lines.append(f"- **Repo:** {proj.repo_url}")
+        if proj.issues_url:
+            meta_lines.append(f"- **Issues:** {proj.issues_url}")
+        if proj.tech_stack:
+            meta_lines.append(f"- **Tech stack:** {', '.join(proj.tech_stack)}")
+        if proj.default_branch:
+            meta_lines.append(f"- **Default branch:** {proj.default_branch}")
+        if proj.ci_url:
+            meta_lines.append(f"- **CI:** {proj.ci_url}")
+        if proj.docs_url:
+            meta_lines.append(f"- **Docs:** {proj.docs_url}")
+        meta_section = ("\n" + "\n".join(meta_lines) + "\n") if meta_lines else ""
+
         prompt = (
             f"You are the project worker for **{proj.name}** "
-            f"(directory: `{proj.path}`).\n\n"
+            f"(directory: `{proj.path}`).\n"
+            f"{meta_section}\n"
             "Use the `claude_code` tool to execute tasks in this project. "
             "Claude Code has full access to the codebase, git history, and "
             "project-specific configuration.\n\n"
@@ -837,7 +856,20 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
         proj_lines = []
         for proj in PROJECTS.values():
             agents_str = ", ".join(proj.agents) if proj.agents else "(general only)"
-            proj_lines.append(f"- **{proj.name}**: sub-agents: {agents_str}")
+            line = f"- **{proj.name}**"
+            if proj.description:
+                line += f" — {proj.description}"
+            line += f": sub-agents: {agents_str}"
+            extras = []
+            if proj.issues_url:
+                extras.append(f"issues: {proj.issues_url}")
+            if proj.repo_url:
+                extras.append(f"repo: {proj.repo_url}")
+            if proj.tech_stack:
+                extras.append(f"tech: {', '.join(proj.tech_stack)}")
+            if extras:
+                line += f" ({'; '.join(extras)})"
+            proj_lines.append(line)
         parts.append(
             "## Project Workers\n\n"
             "Each project has a dedicated worker agent that runs Claude Code in "

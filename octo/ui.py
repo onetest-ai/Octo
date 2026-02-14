@@ -352,6 +352,10 @@ def print_projects() -> None:
     """Print the project registry table."""
     from octo.config import PROJECTS
 
+    if not PROJECTS:
+        print_info("No projects registered. Use /projects create to add one.")
+        return
+
     table = Table(
         title="Projects",
         border_style="magenta",
@@ -360,16 +364,77 @@ def print_projects() -> None:
         padding=(0, 1),
     )
     table.add_column("Project", style="bold yellow", no_wrap=True)
-    table.add_column("Path", style="dim", max_width=50)
-    table.add_column("Config Dir", style="dim", max_width=50)
-    table.add_column("Agents", max_width=40)
+    table.add_column("Description", max_width=40)
+    table.add_column("Path", style="dim", max_width=40)
+    table.add_column("Tech", style="cyan", max_width=20)
+    table.add_column("Agents", max_width=30)
 
     for proj in PROJECTS.values():
         agents = ", ".join(proj.agents[:5])
         if len(proj.agents) > 5:
             agents += f" (+{len(proj.agents) - 5})"
-        table.add_row(proj.name, proj.path, proj.config_dir, agents)
+        tech = ", ".join(proj.tech_stack[:4]) if proj.tech_stack else ""
+        if len(proj.tech_stack) > 4:
+            tech += " …"
+        desc = (proj.description[:37] + "…") if len(proj.description) > 40 else proj.description
+        table.add_row(proj.name, desc, proj.path, tech, agents or "(general)")
     console.print(table)
+    console.print(f"  [dim]{len(PROJECTS)} project(s). Use /projects show <name> for details.[/dim]")
+    console.print()
+
+
+def print_project_detail(name: str) -> None:
+    """Print detailed info for a single project."""
+    from octo.config import PROJECTS
+
+    proj = PROJECTS.get(name)
+    if not proj:
+        print_error(f"Project '{name}' not found. Use /projects to list.")
+        return
+
+    from rich.panel import Panel
+    from rich.text import Text
+
+    lines = Text()
+    lines.append(f"Name:           ", style="bold")
+    lines.append(f"{proj.name}\n")
+    if proj.description:
+        lines.append(f"Description:    ", style="bold")
+        lines.append(f"{proj.description}\n")
+    lines.append(f"Path:           ", style="bold")
+    lines.append(f"{proj.path}\n")
+    lines.append(f"Config dir:     ", style="bold")
+    lines.append(f"{proj.config_dir}\n")
+    if proj.default_branch:
+        lines.append(f"Default branch: ", style="bold")
+        lines.append(f"{proj.default_branch}\n")
+    if proj.repo_url:
+        lines.append(f"Repo URL:       ", style="bold")
+        lines.append(f"{proj.repo_url}\n")
+    if proj.issues_url:
+        lines.append(f"Issues URL:     ", style="bold")
+        lines.append(f"{proj.issues_url}\n")
+    if proj.ci_url:
+        lines.append(f"CI URL:         ", style="bold")
+        lines.append(f"{proj.ci_url}\n")
+    if proj.docs_url:
+        lines.append(f"Docs URL:       ", style="bold")
+        lines.append(f"{proj.docs_url}\n")
+    if proj.tech_stack:
+        lines.append(f"Tech stack:     ", style="bold")
+        lines.append(f"{', '.join(proj.tech_stack)}\n")
+    if proj.agents:
+        lines.append(f"Agents:         ", style="bold")
+        lines.append(f"{', '.join(proj.agents)}\n")
+    if proj.tags:
+        lines.append(f"Tags:           ", style="bold")
+        lines.append(f"{', '.join(f'{k}={v}' for k, v in proj.tags.items())}\n")
+    if proj.env:
+        lines.append(f"Env overrides:  ", style="bold")
+        lines.append(f"{', '.join(f'{k}={v}' for k, v in proj.env.items())}\n")
+
+    console.print(Panel(lines, title=f"[bold magenta]Project: {proj.name}[/bold magenta]",
+                        border_style="magenta"))
     console.print()
 
 
@@ -577,7 +642,7 @@ def print_help() -> None:
         ("/tools", "List MCP tools by server"),
         ("/call [srv] <tool>", "Call MCP tool directly: /call github get_me"),
         ("/mcp [cmd]", "MCP servers (find/install/add/remove/disable/enable/reload)"),
-        ("/projects", "Show project registry"),
+        ("/projects [cmd]", "Projects (show/create/update/remove/reload)"),
         ("/sessions [id]", "List sessions or switch to one"),
         ("/plan", "Show current task plan with progress"),
         ("/profile [name]", "Show/switch model profile (quality/balanced/budget)"),

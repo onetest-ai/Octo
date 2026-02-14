@@ -212,7 +212,9 @@ async def _chat_loop(
 
         # Setup input with slash command completion
         _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
-                            "/tools", "/call", "/projects", "/sessions", "/plan", "/profile",
+                            "/tools", "/call", "/projects", "/projects show", "/projects create",
+                            "/projects update", "/projects remove", "/projects reload",
+                            "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
                             "/create-agent", "/create-skill", "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
@@ -721,8 +723,181 @@ async def _chat_loop(
                         ui.print_error(f"Tool error: {e}")
                     continue
 
-                if user_input == "/projects":
-                    ui.print_projects()
+                if user_input.startswith("/projects"):
+                    from octo.config import (
+                        ProjectConfig, PROJECTS, PROJECTS_DIR,
+                        _autodiscover_project_metadata, _project_to_dict,
+                        reload_projects, save_project, remove_project,
+                    )
+                    parts = user_input.split(maxsplit=2)
+                    sub = parts[1] if len(parts) > 1 else ""
+                    arg = parts[2].strip() if len(parts) > 2 else ""
+
+                    if sub == "":
+                        ui.print_projects()
+
+                    elif sub == "show":
+                        if not arg:
+                            ui.print_error("Usage: /projects show <name>")
+                        else:
+                            ui.print_project_detail(arg)
+
+                    elif sub == "create":
+                        # Interactive create wizard
+                        from prompt_toolkit import prompt as pt_prompt
+                        from octo.config import _validate_project_name
+                        try:
+                            ui.print_info("Creating a new project…")
+                            name = (arg or pt_prompt("  Project name: ")).strip()
+                            if not name:
+                                ui.print_error("Name is required.")
+                                continue
+                            name_err = _validate_project_name(name)
+                            if name_err:
+                                ui.print_error(name_err)
+                                continue
+                            if name in PROJECTS:
+                                ui.print_error(f"Project '{name}' already exists. Use /projects update {name}.")
+                                continue
+                            path = pt_prompt("  Project root path: ").strip()
+                            if not path:
+                                ui.print_error("Path is required.")
+                                continue
+                            path = str(Path(path).expanduser().resolve())
+                            if not Path(path).is_dir():
+                                ui.print_error(f"Directory not found: {path}")
+                                continue
+
+                            # Auto-discover what we can
+                            auto = _autodiscover_project_metadata(Path(path))
+                            ui.print_info(f"Auto-discovered: {', '.join(auto.keys()) or 'nothing'}")
+
+                            # Prompt for optional fields (pre-fill with autodiscovered)
+                            description = pt_prompt(
+                                f"  Description [{auto.get('description', '')}]: "
+                            ).strip() or auto.get("description", "")
+                            repo_url = pt_prompt(
+                                f"  Repo URL [{auto.get('repo_url', '')}]: "
+                            ).strip() or auto.get("repo_url", "")
+                            issues_url = pt_prompt("  Issues URL (Jira/GitHub/Linear): ").strip()
+                            ci_url = pt_prompt("  CI URL: ").strip()
+                            docs_url = pt_prompt("  Docs URL: ").strip()
+
+                            # Config dir — try to detect .claude/
+                            config_dir = ""
+                            claude_dir = Path(path) / ".claude"
+                            if claude_dir.is_dir():
+                                config_dir = str(claude_dir)
+                                ui.print_info(f"Found .claude/ config dir: {config_dir}")
+                            else:
+                                config_dir = pt_prompt("  Config dir (.claude/ path, or empty): ").strip()
+
+                            # Detect agents from config dir
+                            agent_names: list[str] = []
+                            if config_dir:
+                                agents_dir = Path(config_dir) / "agents"
+                                if agents_dir.is_dir():
+                                    agent_names = [md.stem for md in sorted(agents_dir.glob("*.md"))]
+                                    if agent_names:
+                                        ui.print_info(f"Found agents: {', '.join(agent_names)}")
+
+                            proj = ProjectConfig(
+                                name=name,
+                                path=path,
+                                config_dir=config_dir,
+                                env={"CLAUDE_CONFIG_DIR": config_dir} if config_dir else {},
+                                agents=agent_names,
+                                description=description,
+                                repo_url=repo_url,
+                                issues_url=issues_url,
+                                tech_stack=auto.get("tech_stack", []),
+                                default_branch=auto.get("default_branch", ""),
+                                ci_url=ci_url,
+                                docs_url=docs_url,
+                            )
+                            pf = save_project(proj)
+                            ui.print_info(f"Project '{name}' created: {pf}")
+                            ui.print_project_detail(name)
+                        except (KeyboardInterrupt, EOFError):
+                            ui.print_info("Cancelled.")
+
+                    elif sub == "update":
+                        if not arg:
+                            ui.print_error("Usage: /projects update <name>")
+                            continue
+                        proj = PROJECTS.get(arg)
+                        if not proj:
+                            ui.print_error(f"Project '{arg}' not found.")
+                            continue
+                        from prompt_toolkit import prompt as pt_prompt
+                        from dataclasses import replace as dc_replace
+                        try:
+                            ui.print_info(f"Updating project '{arg}' (press Enter to keep current value)…")
+                            # Work on a copy to avoid dirty state on cancel
+                            edits: dict = {}
+                            val = pt_prompt(
+                                f"  Description [{proj.description}]: "
+                            ).strip()
+                            if val:
+                                edits["description"] = val
+                            val = pt_prompt(
+                                f"  Repo URL [{proj.repo_url}]: "
+                            ).strip()
+                            if val:
+                                edits["repo_url"] = val
+                            val = pt_prompt(
+                                f"  Issues URL [{proj.issues_url}]: "
+                            ).strip()
+                            if val:
+                                edits["issues_url"] = val
+                            val = pt_prompt(
+                                f"  CI URL [{proj.ci_url}]: "
+                            ).strip()
+                            if val:
+                                edits["ci_url"] = val
+                            val = pt_prompt(
+                                f"  Docs URL [{proj.docs_url}]: "
+                            ).strip()
+                            if val:
+                                edits["docs_url"] = val
+                            val = pt_prompt(
+                                f"  Default branch [{proj.default_branch}]: "
+                            ).strip()
+                            if val:
+                                edits["default_branch"] = val
+                            tech_input = pt_prompt(
+                                f"  Tech stack (comma-sep) [{', '.join(proj.tech_stack)}]: "
+                            ).strip()
+                            if tech_input:
+                                edits["tech_stack"] = [t.strip() for t in tech_input.split(",") if t.strip()]
+                            if edits:
+                                updated = dc_replace(proj, **edits)
+                                save_project(updated)
+                                ui.print_info(f"Project '{arg}' updated.")
+                                ui.print_project_detail(arg)
+                            else:
+                                ui.print_info("No changes.")
+                        except (KeyboardInterrupt, EOFError):
+                            ui.print_info("Cancelled.")
+
+                    elif sub == "remove":
+                        if not arg:
+                            ui.print_error("Usage: /projects remove <name>")
+                        elif remove_project(arg):
+                            ui.print_info(f"Project '{arg}' removed from registry.")
+                        else:
+                            ui.print_error(f"Project '{arg}' not found.")
+
+                    elif sub == "reload":
+                        reloaded = reload_projects()
+                        ui.print_info(f"Reloaded {len(reloaded)} project(s) from disk.")
+                        ui.print_projects()
+
+                    else:
+                        ui.print_error(
+                            "Usage: /projects [show <name>|create [name]|update <name>|"
+                            "remove <name>|reload]"
+                        )
                     continue
 
                 if user_input.startswith("/sessions"):

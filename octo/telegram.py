@@ -285,9 +285,18 @@ class TelegramTransport:
             _HANDOFF_PHRASES = {"transferring back to supervisor", "transferring to supervisor"}
             for msg in reversed(result.get("messages", [])):
                 if hasattr(msg, "type") and msg.type == "ai" and msg.content:
-                    if msg.content.strip().lower() in _HANDOFF_PHRASES:
+                    # content can be str or list of blocks (Bedrock multi-block)
+                    content = msg.content
+                    if isinstance(content, list):
+                        content = " ".join(
+                            b.get("text", "") if isinstance(b, dict) else str(b)
+                            for b in content
+                        ).strip()
+                    if not content:
                         continue
-                    return msg.content
+                    if content.strip().lower() in _HANDOFF_PHRASES:
+                        continue
+                    return content
             return ""
         finally:
             stop_typing.set()
