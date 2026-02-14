@@ -305,30 +305,17 @@ class ToolResultLimitMiddleware(AgentMiddleware):
 
     # -- truncation logic --
 
-    def _maybe_truncate(self, result: ToolMessage | Command) -> ToolMessage | Command:
-        if isinstance(result, Command):
-            return result
-
-        content = result.content
-
+    def _truncate_content(self, content) -> tuple[Any, bool]:
+        """Truncate content if oversized. Returns (content, was_truncated)."""
         if isinstance(content, str) and len(content) > self.max_chars:
             notice = TRUNCATION_NOTICE.format(
                 original=len(content), limit=self.max_chars,
             )
-            truncated = content[: self.max_chars] + notice
-            logger.info(
-                "Truncated tool result: %d -> %d chars",
-                len(content), len(truncated),
-            )
-            return ToolMessage(
-                content=truncated,
-                tool_call_id=result.tool_call_id,
-            )
+            return content[: self.max_chars] + notice, True
 
         if isinstance(content, list):
             total = sum(len(str(p)) for p in content)
             if total > self.max_chars:
-                # Truncate list-of-parts (structured content)
                 truncated_parts = []
                 running = 0
                 for part in content:
@@ -341,14 +328,66 @@ class ToolResultLimitMiddleware(AgentMiddleware):
                     original=total, limit=self.max_chars,
                 )
                 truncated_parts.append(notice)
-                logger.info(
-                    "Truncated tool result (list): %d -> ~%d chars",
-                    total, running,
-                )
-                return ToolMessage(
-                    content=truncated_parts,
-                    tool_call_id=result.tool_call_id,
-                )
+                return truncated_parts, True
+
+        return content, False
+
+    def _truncate_command_messages(self, cmd: Command) -> Command:
+        """Truncate oversized messages inside a Command (worker transfer).
+
+        When a worker agent transfers back to the supervisor via
+        transfer_to_octo, the Command contains ALL worker messages.
+        Without truncation, huge tool results (175K+ chars) blow the
+        supervisor's context.
+        """
+        update = cmd.update
+        if not update or "messages" not in update:
+            return cmd
+
+        messages = update["messages"]
+        if not messages:
+            return cmd
+
+        modified = False
+        new_messages = []
+        for msg in messages:
+            content = getattr(msg, "content", None)
+            if content is not None:
+                truncated, changed = self._truncate_content(content)
+                if changed:
+                    msg = msg.model_copy(update={"content": truncated})
+                    modified = True
+            new_messages.append(msg)
+
+        if not modified:
+            return cmd
+
+        total_before = sum(len(str(getattr(m, "content", ""))) for m in messages)
+        total_after = sum(len(str(getattr(m, "content", ""))) for m in new_messages)
+        logger.info(
+            "Truncated transfer messages: %d -> %d chars (%d messages)",
+            total_before, total_after, len(new_messages),
+        )
+
+        new_update = dict(update)
+        new_update["messages"] = new_messages
+        return Command(graph=cmd.graph, update=new_update)
+
+    def _maybe_truncate(self, result: ToolMessage | Command) -> ToolMessage | Command:
+        if isinstance(result, Command):
+            return self._truncate_command_messages(result)
+
+        content = result.content
+        truncated, changed = self._truncate_content(content)
+        if changed:
+            logger.info(
+                "Truncated tool result: %d -> %d chars",
+                len(str(content)), len(str(truncated)),
+            )
+            return ToolMessage(
+                content=truncated,
+                tool_call_id=result.tool_call_id,
+            )
 
         return result
 

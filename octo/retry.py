@@ -41,11 +41,14 @@ def _classify_error(error: BaseException) -> str | None:
 
 
 async def auto_compact(app: Any, config: dict) -> bool:
-    """Run automatic context compaction. Returns True if successful."""
+    """Run automatic context compaction. Returns True if successful.
+
+    Two-stage: tries LLM summarization first, falls back to crude
+    message dropping if the summary model also fails (e.g. Bedrock
+    returning 'model identifier is invalid' for both main and low-tier).
+    """
     try:
         from langchain_core.messages import RemoveMessage, SystemMessage
-        from langchain_core.messages.utils import count_tokens_approximately
-        from octo.models import make_model
 
         state = await app.aget_state(config)
         messages = state.values.get("messages", [])
@@ -59,27 +62,42 @@ async def auto_compact(app: Any, config: dict) -> bool:
         if not removable:
             return False
 
-        # Summarize old messages
-        summary_model = make_model(tier="low")
-        summary_lines = []
-        for m in old_msgs:
-            role = getattr(m, "type", "unknown")
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            if content.strip():
-                summary_lines.append(f"[{role}]: {content[:300]}")
+        # Stage 1: try LLM summarization
+        summary_msg = None
+        try:
+            from octo.models import make_model
+            summary_model = make_model(tier="low")
+            summary_lines = []
+            for m in old_msgs:
+                role = getattr(m, "type", "unknown")
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                if content.strip():
+                    summary_lines.append(f"[{role}]: {content[:300]}")
 
-        summary_prompt = (
-            "Summarize this conversation concisely in 2-3 paragraphs. "
-            "Focus on: decisions made, tasks completed, and current objectives.\n\n"
-            + "\n".join(summary_lines[-80:])
-        )
-        summary_response = await summary_model.ainvoke(summary_prompt)
-        summary_msg = SystemMessage(
-            content=(
-                "[Conversation summary — earlier messages were auto-compacted]\n\n"
-                + summary_response.content
+            summary_prompt = (
+                "Summarize this conversation concisely in 2-3 paragraphs. "
+                "Focus on: decisions made, tasks completed, and current objectives.\n\n"
+                + "\n".join(summary_lines[-80:])
             )
-        )
+            summary_response = await summary_model.ainvoke(summary_prompt)
+            summary_msg = SystemMessage(
+                content=(
+                    "[Conversation summary — earlier messages were auto-compacted]\n\n"
+                    + summary_response.content
+                )
+            )
+        except Exception:
+            # Stage 2: fallback — crude drop without summarization
+            logger.warning(
+                "Summary model failed, falling back to crude compaction",
+                exc_info=True,
+            )
+            summary_msg = SystemMessage(
+                content=(
+                    "[Earlier conversation was auto-compacted (summary unavailable). "
+                    f"{len(removable)} messages removed to reduce context size.]"
+                )
+            )
 
         remove_ops = [RemoveMessage(id=m.id) for m in removable]
         await app.aupdate_state(config, {"messages": remove_ops + [summary_msg]})
