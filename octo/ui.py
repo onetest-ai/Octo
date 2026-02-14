@@ -81,7 +81,7 @@ LOGO = [
 def _get_version() -> str:
     try:
         from importlib.metadata import version
-        return version("octo")
+        return version("octo-agent")
     except Exception:
         return "0.1.x"
 

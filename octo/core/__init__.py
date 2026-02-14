@@ -17,11 +17,14 @@ from __future__ import annotations
 
 from octo.core.config import OctoConfig, OctoConfigError
 from octo.core.engine import OctoEngine, OctoEngineError, OctoResponse
+from octo.core.storage import FilesystemStorage, StorageBackend
 
 __all__ = [
+    "FilesystemStorage",
     "OctoConfig",
     "OctoConfigError",
     "OctoEngine",
     "OctoEngineError",
     "OctoResponse",
+    "StorageBackend",
 ]

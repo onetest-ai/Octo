@@ -1,17 +1,8 @@
 """Graph builder for OctoEngine — constructs LangGraph app from OctoConfig.
 
 This bridges the gap between the new OctoConfig-based API and the existing
-graph.py machinery. As the split matures, more of graph.py will move here.
-
-⚠️ KNOWN LIMITATION: Thread Safety / Global State Mutation
-   This builder patches module-level variables in octo.models and octo.config
-   to inject OctoConfig values into the legacy code path. This means:
-   - NOT thread-safe
-   - Only ONE OctoEngine config can be active per process
-   - For multi-tenant scenarios, use one engine per process/worker
-
-   This will be resolved when models.py and config.py are refactored to
-   accept config objects directly instead of reading module globals.
+graph.py machinery.  Uses config injection into make_model() instead of
+mutating module-level globals.
 """
 from __future__ import annotations
 
@@ -31,22 +22,20 @@ async def build_engine_graph(config: Any) -> tuple[Any, Any]:
     actual agent/supervisor assembly. The OctoConfig is used to configure:
     - Model selection (provider, credentials, tiers)
     - Checkpointing backend
-    - Storage backend for tools
     - Context management parameters
 
     Returns:
         Tuple of (compiled_app, checkpointer)
 
     Raises:
-        RuntimeError: If another build is in progress (concurrent builds
-            would corrupt global state).
+        RuntimeError: If another build is in progress.
     """
     global _build_lock_holder
 
     from octo.core.config import OctoConfig
     assert isinstance(config, OctoConfig)
 
-    # Detect concurrent builds that would corrupt global state
+    # Detect concurrent builds
     build_id = f"{config.llm_provider}:{config.default_model}:{id(config)}"
     if _build_lock_holder is not None:
         raise RuntimeError(
@@ -62,55 +51,63 @@ async def build_engine_graph(config: Any) -> tuple[Any, Any]:
         _build_lock_holder = None
 
 
+def _build_model_config(config: Any) -> dict:
+    """Build a config dict for make_model() from OctoConfig."""
+    creds = config.llm_credentials
+    model_config: dict[str, str] = {
+        "provider": config.llm_provider,
+        "default_model": config.default_model,
+    }
+    if config.high_tier_model:
+        model_config["high_tier_model"] = config.high_tier_model
+    if config.low_tier_model:
+        model_config["low_tier_model"] = config.low_tier_model
+
+    # Map credentials to config keys based on provider
+    if "api_key" in creds:
+        model_config["api_key"] = creds["api_key"]
+    if config.llm_provider == "openai" and "api_key" in creds:
+        model_config["openai_api_key"] = creds["api_key"]
+    if config.llm_provider == "azure":
+        if "api_key" in creds:
+            model_config["azure_api_key"] = creds["api_key"]
+        if "endpoint" in creds:
+            model_config["azure_endpoint"] = creds["endpoint"]
+        if "api_version" in creds:
+            model_config["azure_api_version"] = creds["api_version"]
+    if config.llm_provider == "bedrock":
+        if "region" in creds:
+            model_config["region"] = creds["region"]
+        if "access_key_id" in creds:
+            model_config["access_key_id"] = creds["access_key_id"]
+        if "secret_access_key" in creds:
+            model_config["secret_access_key"] = creds["secret_access_key"]
+    if config.llm_provider == "github":
+        if "api_key" in creds:
+            model_config["github_token"] = creds["api_key"]
+        if "base_url" in creds:
+            model_config["github_base_url"] = creds["base_url"]
+        if "anthropic_base_url" in creds:
+            model_config["github_anthropic_base_url"] = creds["anthropic_base_url"]
+
+    return model_config
+
+
 async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
     """Internal build implementation."""
-
-    # --- Configure models ---
-    # Temporarily override the config module's globals so that make_model()
-    # picks up our config values. This is a bridge until models.py is
-    # refactored to accept config directly.
     import octo.config as legacy_config
-    import octo.models as models_mod
 
-    if config.llm_provider:
-        models_mod.LLM_PROVIDER = config.llm_provider
-    if config.default_model:
-        models_mod.DEFAULT_MODEL = config.default_model
-    if config.high_tier_model:
-        models_mod.HIGH_TIER_MODEL = config.high_tier_model
-    if config.low_tier_model:
-        models_mod.LOW_TIER_MODEL = config.low_tier_model
-
-    # Map credentials to the module-level vars models.py reads
-    creds = config.llm_credentials
-    if "api_key" in creds:
-        if config.llm_provider == "anthropic":
-            models_mod.ANTHROPIC_API_KEY = creds["api_key"]
-        elif config.llm_provider == "openai":
-            models_mod.OPENAI_API_KEY = creds["api_key"]
-        elif config.llm_provider == "azure":
-            models_mod.AZURE_OPENAI_API_KEY = creds["api_key"]
-        elif config.llm_provider == "github":
-            models_mod.GITHUB_TOKEN = creds["api_key"]
-    if "endpoint" in creds and config.llm_provider == "azure":
-        models_mod.AZURE_OPENAI_ENDPOINT = creds["endpoint"]
-    if "region" in creds and config.llm_provider == "bedrock":
-        models_mod.AWS_REGION = creds["region"]
-    if "access_key_id" in creds:
-        models_mod.AWS_ACCESS_KEY_ID = creds["access_key_id"]
-    if "secret_access_key" in creds:
-        models_mod.AWS_SECRET_ACCESS_KEY = creds["secret_access_key"]
-
-    # --- Configure middleware thresholds ---
+    # Configure middleware thresholds on legacy config
+    # (these are simple int values, safe to override)
     legacy_config.TOOL_RESULT_LIMIT = config.tool_result_limit
     legacy_config.SUPERVISOR_MSG_CHAR_LIMIT = config.supervisor_msg_char_limit
     legacy_config.SUMMARIZATION_TRIGGER_TOKENS = config.summarization_trigger_tokens
     legacy_config.SUMMARIZATION_KEEP_TOKENS = config.summarization_keep_tokens
 
-    # --- Build checkpointer ---
-    checkpointer = await _make_checkpointer(config)
+    # Build checkpointer
+    from octo.core.checkpointing import make_checkpointer
+    checkpointer = await make_checkpointer(config)
 
-    # --- Build the graph ---
     # Use preloaded_tools if provided; otherwise the graph will load MCP tools
     mcp_tools = config.preloaded_tools or []
     mcp_tools_by_server: dict[str, list] = {}
@@ -118,7 +115,7 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         mcp_tools_by_server["preloaded"] = mcp_tools
 
     # Import and call the existing build_graph, passing our checkpointer
-    from octo.graph import build_graph
+    from octo.core.graph import build_graph
     app_tuple = await build_graph(
         mcp_tools=mcp_tools,
         mcp_tools_by_server=mcp_tools_by_server,
@@ -129,42 +126,5 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
     return app, checkpointer
 
 
-async def _make_checkpointer(config: Any) -> Any:
-    """Create a checkpointer based on config.
 
-    Args:
-        config: OctoConfig instance.
-
-    Returns:
-        A LangGraph checkpoint saver instance.
-    """
-    backend = config.checkpoint_backend
-
-    if backend == "postgres":
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        except ImportError:
-            raise ImportError(
-                "PostgreSQL checkpointing requires the postgres extra. "
-                "Install with: pip install octo-agent[postgres]"
-            )
-        dsn = config.checkpoint_config.get("dsn", "")
-        if not dsn:
-            raise ValueError("PostgreSQL checkpointer requires 'dsn' in checkpoint_config")
-        checkpointer = AsyncPostgresSaver.from_conn_string(dsn)
-        await checkpointer.setup()
-        return checkpointer
-
-    # Default: SQLite
-    import aiosqlite
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-    db_path = config.checkpoint_config.get("path", "")
-    if not db_path:
-        # Use in-memory if no path given
-        db_path = ":memory:"
-
-    conn = await aiosqlite.connect(db_path)
-    checkpointer = AsyncSqliteSaver(conn)
-    await checkpointer.setup()
-    return checkpointer
+# _make_checkpointer moved to octo.core.checkpointing.make_checkpointer
