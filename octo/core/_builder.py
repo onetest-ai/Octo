@@ -2,6 +2,16 @@
 
 This bridges the gap between the new OctoConfig-based API and the existing
 graph.py machinery. As the split matures, more of graph.py will move here.
+
+⚠️ KNOWN LIMITATION: Thread Safety / Global State Mutation
+   This builder patches module-level variables in octo.models and octo.config
+   to inject OctoConfig values into the legacy code path. This means:
+   - NOT thread-safe
+   - Only ONE OctoEngine config can be active per process
+   - For multi-tenant scenarios, use one engine per process/worker
+
+   This will be resolved when models.py and config.py are refactored to
+   accept config objects directly instead of reading module globals.
 """
 from __future__ import annotations
 
@@ -9,6 +19,9 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Sentinel to detect concurrent engine builds
+_build_lock_holder: str | None = None
 
 
 async def build_engine_graph(config: Any) -> tuple[Any, Any]:
@@ -23,9 +36,34 @@ async def build_engine_graph(config: Any) -> tuple[Any, Any]:
 
     Returns:
         Tuple of (compiled_app, checkpointer)
+
+    Raises:
+        RuntimeError: If another build is in progress (concurrent builds
+            would corrupt global state).
     """
+    global _build_lock_holder
+
     from octo.core.config import OctoConfig
     assert isinstance(config, OctoConfig)
+
+    # Detect concurrent builds that would corrupt global state
+    build_id = f"{config.llm_provider}:{config.default_model}:{id(config)}"
+    if _build_lock_holder is not None:
+        raise RuntimeError(
+            f"Concurrent OctoEngine build detected. Another build is in progress "
+            f"({_build_lock_holder}). Only one engine can be built at a time per process. "
+            f"See _builder.py docstring for details."
+        )
+
+    _build_lock_holder = build_id
+    try:
+        return await _build_engine_graph_impl(config)
+    finally:
+        _build_lock_holder = None
+
+
+async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
+    """Internal build implementation."""
 
     # --- Configure models ---
     # Temporarily override the config module's globals so that make_model()
@@ -79,17 +117,13 @@ async def build_engine_graph(config: Any) -> tuple[Any, Any]:
     if mcp_tools:
         mcp_tools_by_server["preloaded"] = mcp_tools
 
-    # Import and call the existing build_graph
+    # Import and call the existing build_graph, passing our checkpointer
     from octo.graph import build_graph
     app_tuple = await build_graph(
         mcp_tools=mcp_tools,
         mcp_tools_by_server=mcp_tools_by_server,
+        checkpointer=checkpointer,
     )
-    # build_graph returns (app, agents, skills) but the app is compiled
-    # with its own checkpointer. We need to recompile with ours.
-    # For now, the app from build_graph already has its checkpointer.
-    # TODO: refactor build_graph to return the workflow before compilation
-    # so we can inject our own checkpointer cleanly.
     app = app_tuple[0]
 
     return app, checkpointer

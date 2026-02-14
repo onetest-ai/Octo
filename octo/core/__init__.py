@@ -15,7 +15,13 @@ Public API::
 """
 from __future__ import annotations
 
-from octo.core.config import OctoConfig
-from octo.core.engine import OctoEngine, OctoResponse
+from octo.core.config import OctoConfig, OctoConfigError
+from octo.core.engine import OctoEngine, OctoEngineError, OctoResponse
 
-__all__ = ["OctoConfig", "OctoEngine", "OctoResponse"]
+__all__ = [
+    "OctoConfig",
+    "OctoConfigError",
+    "OctoEngine",
+    "OctoEngineError",
+    "OctoResponse",
+]

@@ -581,8 +581,15 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
 async def build_graph(
     mcp_tools: list | None = None,
     mcp_tools_by_server: dict[str, list] | None = None,
+    checkpointer: Any = None,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
+
+    Args:
+        mcp_tools: Pre-loaded MCP tools list.
+        mcp_tools_by_server: MCP tools grouped by server name.
+        checkpointer: Optional LangGraph checkpointer. If None, creates
+            a default AsyncSqliteSaver using DB_PATH.
 
     Returns:
         Tuple of (compiled app, all agent configs, skills).
@@ -754,10 +761,11 @@ async def build_graph(
         pre_model_hook=hook,
     )
 
-    # Compile with persistent async checkpointer
-    conn = await aiosqlite.connect(str(DB_PATH))
-    checkpointer = AsyncSqliteSaver(conn)
-    await checkpointer.setup()
+    # Compile with checkpointer (use provided or create default SQLite one)
+    if checkpointer is None:
+        conn = await aiosqlite.connect(str(DB_PATH))
+        checkpointer = AsyncSqliteSaver(conn)
+        await checkpointer.setup()
     app = workflow.compile(checkpointer=checkpointer)
 
     return app, all_agents, skills

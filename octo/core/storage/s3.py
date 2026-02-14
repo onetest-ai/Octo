@@ -3,11 +3,16 @@
 Requires the [s3] extra: pip install octo-agent[s3]
 
 Works with AWS S3, MinIO, and any S3-compatible service.
+
+All boto3 calls are wrapped in asyncio.to_thread() to avoid blocking
+the event loop (boto3 is synchronous).
 """
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
+from functools import partial
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -25,6 +30,9 @@ def _require_boto3() -> Any:
 
 class S3Storage:
     """S3-compatible object storage backend.
+
+    All I/O operations run in a thread pool via asyncio.to_thread()
+    because boto3 is synchronous. This prevents blocking the event loop.
 
     Args:
         bucket: S3 bucket name.
@@ -62,8 +70,9 @@ class S3Storage:
         """Build full S3 key from relative path."""
         return self._prefix + path
 
-    async def read(self, path: str) -> str:
-        """Read object content as text."""
+    # --- Sync implementations (run in thread pool) ---
+
+    def _read_sync(self, path: str) -> str:
         import botocore.exceptions
         try:
             response = self._client.get_object(
@@ -76,8 +85,7 @@ class S3Storage:
                 raise FileNotFoundError(f"S3 object not found: {path}")
             raise
 
-    async def write(self, path: str, content: str) -> None:
-        """Write text content to an object."""
+    def _write_sync(self, path: str, content: str) -> None:
         self._client.put_object(
             Bucket=self._bucket,
             Key=self._key(path),
@@ -85,16 +93,7 @@ class S3Storage:
             ContentType="text/plain; charset=utf-8",
         )
 
-    async def append(self, path: str, content: str) -> None:
-        """Append text — read + write (S3 doesn't support true append)."""
-        try:
-            existing = await self.read(path)
-        except FileNotFoundError:
-            existing = ""
-        await self.write(path, existing + content)
-
-    async def exists(self, path: str) -> bool:
-        """Check if an object exists."""
+    def _exists_sync(self, path: str) -> bool:
         import botocore.exceptions
         try:
             self._client.head_object(
@@ -105,8 +104,7 @@ class S3Storage:
         except botocore.exceptions.ClientError:
             return False
 
-    async def list_dir(self, prefix: str = "") -> list[str]:
-        """List objects under a prefix (non-recursive)."""
+    def _list_dir_sync(self, prefix: str) -> list[str]:
         full_prefix = self._key(prefix)
         if full_prefix and not full_prefix.endswith("/"):
             full_prefix += "/"
@@ -119,22 +117,18 @@ class S3Storage:
         results = []
         for obj in response.get("Contents", []):
             key = obj["Key"]
-            # Strip our prefix to return relative paths
             if self._prefix and key.startswith(self._prefix):
                 key = key[len(self._prefix):]
             results.append(key)
         return results
 
-    async def delete(self, path: str) -> None:
-        """Delete an object. No error if missing."""
+    def _delete_sync(self, path: str) -> None:
         self._client.delete_object(
             Bucket=self._bucket,
             Key=self._key(path),
         )
 
-    async def glob(self, pattern: str) -> list[str]:
-        """Find objects matching a glob pattern."""
-        # List all objects under prefix and filter with fnmatch
+    def _glob_sync(self, pattern: str) -> list[str]:
         paginator = self._client.get_paginator("list_objects_v2")
         results = []
         for page in paginator.paginate(
@@ -148,6 +142,40 @@ class S3Storage:
                 if fnmatch.fnmatch(key, pattern):
                     results.append(key)
         return results
+
+    # --- Async API (delegates to thread pool) ---
+
+    async def read(self, path: str) -> str:
+        """Read object content as text."""
+        return await asyncio.to_thread(self._read_sync, path)
+
+    async def write(self, path: str, content: str) -> None:
+        """Write text content to an object."""
+        await asyncio.to_thread(self._write_sync, path, content)
+
+    async def append(self, path: str, content: str) -> None:
+        """Append text — read + write (S3 doesn't support true append)."""
+        try:
+            existing = await self.read(path)
+        except FileNotFoundError:
+            existing = ""
+        await self.write(path, existing + content)
+
+    async def exists(self, path: str) -> bool:
+        """Check if an object exists."""
+        return await asyncio.to_thread(self._exists_sync, path)
+
+    async def list_dir(self, prefix: str = "") -> list[str]:
+        """List objects under a prefix (non-recursive)."""
+        return await asyncio.to_thread(self._list_dir_sync, prefix)
+
+    async def delete(self, path: str) -> None:
+        """Delete an object. No error if missing."""
+        await asyncio.to_thread(self._delete_sync, path)
+
+    async def glob(self, pattern: str) -> list[str]:
+        """Find objects matching a glob pattern."""
+        return await asyncio.to_thread(self._glob_sync, pattern)
 
     def __repr__(self) -> str:
         return (

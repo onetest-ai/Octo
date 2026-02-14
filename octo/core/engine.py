@@ -15,11 +15,21 @@ Usage::
     )
     engine = OctoEngine(config)
     response = await engine.invoke("Hello!", thread_id="conv-123")
+
+Thread Safety:
+    OctoEngine is NOT thread-safe. Each OctoEngine instance mutates global
+    module state during _ensure_built() (see _builder.py). Do NOT share
+    engine instances across threads, and do NOT create multiple engines
+    with different configs in the same process simultaneously.
+
+    For multi-tenant scenarios, use one engine per process/worker,
+    or wait for the builder refactor that eliminates global state mutation.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import traceback
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
@@ -33,6 +43,12 @@ class OctoResponse:
     context_tokens_used: int = 0
     context_tokens_limit: int = 200_000
     agent_name: str = ""  # which agent produced the final response
+    error: str | None = None  # non-None if invocation failed
+    error_traceback: str | None = None  # full traceback for debugging
+
+
+class OctoEngineError(Exception):
+    """Raised when OctoEngine encounters a non-recoverable error."""
 
 
 class OctoEngine:
@@ -43,12 +59,16 @@ class OctoEngine:
 
     Args:
         config: OctoConfig with all engine parameters.
+        validate: If True (default), validate config on construction.
     """
 
-    def __init__(self, config: Any) -> None:  # Any to avoid circular; expects OctoConfig
+    def __init__(self, config: Any, *, validate: bool = True) -> None:
         from octo.core.config import OctoConfig
         if not isinstance(config, OctoConfig):
             raise TypeError(f"Expected OctoConfig, got {type(config).__name__}")
+
+        if validate:
+            config.validate()
 
         self.config = config
         self._app: Any = None  # compiled LangGraph app
@@ -56,13 +76,19 @@ class OctoEngine:
         self._built = False
 
     async def _ensure_built(self) -> None:
-        """Lazy-build the graph on first invocation."""
+        """Lazy-build the graph on first invocation.
+
+        Raises OctoEngineError if the graph fails to build.
+        """
         if self._built:
             return
 
-        from octo.core._builder import build_engine_graph
-        self._app, self._checkpointer = await build_engine_graph(self.config)
-        self._built = True
+        try:
+            from octo.core._builder import build_engine_graph
+            self._app, self._checkpointer = await build_engine_graph(self.config)
+            self._built = True
+        except Exception as e:
+            raise OctoEngineError(f"Failed to build engine graph: {e}") from e
 
     async def invoke(
         self,
@@ -80,31 +106,49 @@ class OctoEngine:
 
         Returns:
             OctoResponse with the assistant's reply.
+            If an error occurs, response.error will be set (content may be empty).
         """
-        await self._ensure_built()
+        try:
+            await self._ensure_built()
+        except OctoEngineError as e:
+            return OctoResponse(
+                content="",
+                thread_id=thread_id,
+                error=str(e),
+                error_traceback=traceback.format_exc(),
+            )
 
-        from langchain_core.messages import HumanMessage
+        try:
+            from langchain_core.messages import HumanMessage
 
-        config = {"configurable": {"thread_id": thread_id}}
-        input_data = {"messages": [HumanMessage(content=message)]}
+            config = {"configurable": {"thread_id": thread_id}}
+            input_data = {"messages": [HumanMessage(content=message)]}
 
-        result = await self._app.ainvoke(input_data, config=config)
+            result = await self._app.ainvoke(input_data, config=config)
 
-        # Extract the last AI message
-        messages = result.get("messages", [])
-        last_ai = ""
-        agent_name = ""
-        for msg in reversed(messages):
-            if hasattr(msg, "content") and getattr(msg, "type", "") == "ai":
-                last_ai = msg.content if isinstance(msg.content, str) else str(msg.content)
-                agent_name = getattr(msg, "name", "") or ""
-                break
+            # Extract the last AI message
+            messages = result.get("messages", [])
+            last_ai = ""
+            agent_name = ""
+            for msg in reversed(messages):
+                if hasattr(msg, "content") and getattr(msg, "type", "") == "ai":
+                    last_ai = msg.content if isinstance(msg.content, str) else str(msg.content)
+                    agent_name = getattr(msg, "name", "") or ""
+                    break
 
-        return OctoResponse(
-            content=last_ai,
-            thread_id=thread_id,
-            agent_name=agent_name,
-        )
+            return OctoResponse(
+                content=last_ai,
+                thread_id=thread_id,
+                agent_name=agent_name,
+            )
+        except Exception as e:
+            logger.error("OctoEngine.invoke() failed: %s", e, exc_info=True)
+            return OctoResponse(
+                content="",
+                thread_id=thread_id,
+                error=f"Invocation failed: {e}",
+                error_traceback=traceback.format_exc(),
+            )
 
     async def stream(
         self,
@@ -115,6 +159,7 @@ class OctoEngine:
         """Stream response events.
 
         Yields dicts with event data (tokens, tool calls, agent switches).
+        Raises OctoEngineError if the graph fails to build.
         """
         await self._ensure_built()
 
@@ -126,6 +171,11 @@ class OctoEngine:
         async for event in self._app.astream_events(input_data, config=config, version="v2"):
             yield event
 
+    @property
+    def is_built(self) -> bool:
+        """Whether the engine graph has been built."""
+        return self._built
+
     async def close(self) -> None:
         """Clean up resources (close DB connections, etc.)."""
         if self._checkpointer and hasattr(self._checkpointer, "conn"):
@@ -133,6 +183,9 @@ class OctoEngine:
                 await self._checkpointer.conn.close()
             except Exception:
                 pass
+        self._built = False
+        self._app = None
+        self._checkpointer = None
 
     def __repr__(self) -> str:
         return (
