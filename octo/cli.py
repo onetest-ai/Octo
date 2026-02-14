@@ -214,7 +214,7 @@ async def _chat_loop(
         _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
                             "/tools", "/call", "/projects", "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
-                            "/create-agent", "/state", "/memory", "exit", "quit"]
+                            "/create-agent", "/create-skill", "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
                       + [f"/{s.name}" for s in skills]
                       + [f"/{a.name}" for a in agent_configs])
@@ -336,7 +336,10 @@ async def _chat_loop(
 
         async def _rebuild_graph():
             nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
-            await session_pool.close_all()  # Close old STDIO sessions before reload
+            # Shield from CancelledError: closing STDIO sessions tears down anyio
+            # cancel scopes that can propagate cancellation to the running task.
+            await asyncio.shield(session_pool.close_all())
+            await asyncio.sleep(0.05)  # let cancel scopes settle
             mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
             app, agent_configs, skills = await build_graph(mcp_tools, mcp_tools_by_server)
             # Update proactive runners with new graph
@@ -1024,6 +1027,15 @@ async def _chat_loop(
                         ui.print_info(f"Agent '{result}' created. Rebuilding graph...")
                         await _rebuild_graph()
                         ui.print_info(f"Done. {len(agent_configs)} agent(s) loaded.")
+                    continue
+
+                if user_input == "/create-skill":
+                    from octo.skill_wizard import create_skill_wizard
+                    result = await create_skill_wizard()
+                    if result:
+                        ui.print_info(f"Skill '{result}' created. Rebuilding graph...")
+                        await _rebuild_graph()
+                        ui.print_info(f"Done. {len(skills)} skill(s) loaded.")
                     continue
 
                 # Check for skill or agent invocation

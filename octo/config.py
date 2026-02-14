@@ -235,7 +235,7 @@ CRON_PATH = OCTO_DIR / "cron.json"
 # --- Virtual Persona ---
 VP_DIR = OCTO_DIR / "virtual-persona"
 # VP_DIR.mkdir() is intentionally NOT called here — created lazily on first /vp enable
-VP_ENABLED = os.getenv("VP_ENABLED", "true").lower() in ("true", "1", "yes")
+VP_ENABLED = os.getenv("VP_ENABLED", "false").lower() in ("true", "1", "yes")
 VP_POLL_INTERVAL = os.getenv("VP_POLL_INTERVAL", "2m")
 VP_ACTIVE_START = os.getenv("VP_ACTIVE_HOURS_START", "08:00")
 VP_ACTIVE_END = os.getenv("VP_ACTIVE_HOURS_END", "22:00")

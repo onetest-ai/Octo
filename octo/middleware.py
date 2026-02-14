@@ -386,9 +386,6 @@ def build_summarization_middleware():
 
     return SummarizationMiddleware(
         model=make_model(tier="low"),
-        trigger=[
-            ("fraction", SUMMARIZATION_TRIGGER_FRACTION),
-            ("tokens", SUMMARIZATION_TRIGGER_TOKENS),
-        ],
+        trigger=("tokens", SUMMARIZATION_TRIGGER_TOKENS),
         keep=("tokens", SUMMARIZATION_KEEP_TOKENS),
     )
