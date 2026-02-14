@@ -152,10 +152,12 @@ TOOL_RESULT_LIMIT = int(os.getenv("TOOL_RESULT_LIMIT", "40000"))
 
 # Summarization — fraction of context window that triggers compaction
 SUMMARIZATION_TRIGGER_FRACTION = float(os.getenv("SUMMARIZATION_TRIGGER_FRACTION", "0.7"))
-# Summarization — token count trigger (whichever fires first with fraction)
-SUMMARIZATION_TRIGGER_TOKENS = int(os.getenv("SUMMARIZATION_TRIGGER_TOKENS", "100000"))
+# Summarization — token count trigger for workers (only workers use this middleware;
+# supervisor uses pre_model_hook instead).  Keep this aggressive to prevent workers
+# from accumulating huge history that blows the supervisor's context on transfer-back.
+SUMMARIZATION_TRIGGER_TOKENS = int(os.getenv("SUMMARIZATION_TRIGGER_TOKENS", "40000"))
 # Summarization — how many tokens of recent history to keep after compaction
-SUMMARIZATION_KEEP_TOKENS = int(os.getenv("SUMMARIZATION_KEEP_TOKENS", "20000"))
+SUMMARIZATION_KEEP_TOKENS = int(os.getenv("SUMMARIZATION_KEEP_TOKENS", "8000"))
 # Supervisor pre-model hook — max chars per message before truncation (safety net)
 SUPERVISOR_MSG_CHAR_LIMIT = int(os.getenv("SUPERVISOR_MSG_CHAR_LIMIT", "30000"))
 

@@ -357,19 +357,20 @@ class ToolResultLimitMiddleware(AgentMiddleware):
 # Summarization middleware — wraps the official LangChain implementation
 # ---------------------------------------------------------------------------
 
-def build_summarization_middleware():
+def build_summarization_middleware(
+    trigger_tokens: int | None = None,
+    keep_tokens: int | None = None,
+):
     """Create a ``SummarizationMiddleware`` configured for Octo.
 
     Uses a low-tier model for cheap summarization.  All thresholds are
     token-based (not message-count) since individual messages can be huge.
 
-    Config (env vars via ``octo.config``):
-
-    - ``SUMMARIZATION_TRIGGER_FRACTION`` (default 0.7) — context window %
-    - ``SUMMARIZATION_TRIGGER_TOKENS``   (default 100000) — absolute token count
-    - ``SUMMARIZATION_KEEP_TOKENS``      (default 20000) — tokens to keep after compaction
-
-    Whichever trigger fires first activates summarization.
+    Args:
+        trigger_tokens: Override token threshold for triggering compaction.
+            Defaults to ``SUMMARIZATION_TRIGGER_TOKENS`` from config (40K).
+        keep_tokens: Override how many tokens to keep after compaction.
+            Defaults to ``SUMMARIZATION_KEEP_TOKENS`` from config (8K).
 
     Returns:
         A ``SummarizationMiddleware`` instance ready to be passed to
@@ -379,13 +380,12 @@ def build_summarization_middleware():
 
     from octo.config import (
         SUMMARIZATION_KEEP_TOKENS,
-        SUMMARIZATION_TRIGGER_FRACTION,
         SUMMARIZATION_TRIGGER_TOKENS,
     )
     from octo.models import make_model
 
     return SummarizationMiddleware(
         model=make_model(tier="low"),
-        trigger=("tokens", SUMMARIZATION_TRIGGER_TOKENS),
-        keep=("tokens", SUMMARIZATION_KEEP_TOKENS),
+        trigger=("tokens", trigger_tokens or SUMMARIZATION_TRIGGER_TOKENS),
+        keep=("tokens", keep_tokens or SUMMARIZATION_KEEP_TOKENS),
     )

@@ -33,10 +33,10 @@ def _classify_error(error: BaseException) -> str | None:
         return "orphaned_tools"
     if "connection was closed" in msg or "connection reset" in msg or "broken pipe" in msg:
         return "connection_closed"
-    # Bedrock cross-region inference profiles can transiently return
-    # "model identifier is invalid" even for valid IDs — treat as transient.
+    # Bedrock cross-region inference profiles can return "model identifier
+    # is invalid" for oversized payloads or transient issues. Try compact first.
     if "model identifier is invalid" in msg:
-        return "connection_closed"
+        return "model_invalid"
     return None
 
 
@@ -268,6 +268,32 @@ async def invoke_with_retry(
                     except Exception as e2:
                         raise e2
                 raise  # compact failed, give up
+
+            if category == "model_invalid" and attempt < _MAX_RETRIES:
+                # Bedrock inference profiles return "model identifier is
+                # invalid" for oversized payloads or transient issues.
+                # First try: auto-compact to reduce context size.
+                if attempt == 0:
+                    if on_retry:
+                        await on_retry("Model error — auto-compacting context...", attempt + 1)
+                    compacted = await auto_compact(app, config)
+                    if compacted:
+                        try:
+                            return await app.ainvoke(input_data, config=config)
+                        except Exception as e2:
+                            last_error = e2
+                            # Fall through to retry with client reset
+                # Subsequent tries: reset client + backoff
+                try:
+                    from octo.models import reset_bedrock_client
+                    reset_bedrock_client()
+                except ImportError:
+                    pass
+                delay = _BACKOFF_TIMEOUT[min(attempt, len(_BACKOFF_TIMEOUT) - 1)]
+                if on_retry:
+                    await on_retry(f"Model error, retrying in {delay}s ({attempt + 1}/{_MAX_RETRIES})...", attempt + 1)
+                await asyncio.sleep(delay)
+                continue
 
             if category == "connection_closed" and attempt < _MAX_RETRIES:
                 # Connection dropped — reset the cached Bedrock client so

@@ -60,14 +60,28 @@ def _save_todos_to_disk(todos: list[dict[str, str]]) -> None:
 
 
 _todos: list[dict[str, str]] = _load_todos_from_disk()
+_MAX_TODOS = 20  # auto-prune completed items beyond this
 
 
 @tool
 def write_todos(todos: list[dict[str, str]]) -> str:
     """Write or update the task plan. Each todo is {task, status}.
     Status can be: pending, in_progress, completed.
-    Use this to break complex tasks into steps before executing."""
+    Use this to break complex tasks into steps before executing.
+
+    IMPORTANT: When starting a NEW task, write only the new plan items.
+    Do NOT carry over completed items from previous tasks — they are
+    auto-archived. Only include items relevant to the current task."""
     global _todos
+
+    # Auto-prune: drop old completed items to prevent infinite growth.
+    # Keep all pending/in_progress + most recent completed up to limit.
+    if len(todos) > _MAX_TODOS:
+        pending = [t for t in todos if t.get("status") != "completed"]
+        completed = [t for t in todos if t.get("status") == "completed"]
+        keep_completed = max(0, _MAX_TODOS - len(pending))
+        todos = completed[-keep_completed:] + pending if keep_completed else pending[-_MAX_TODOS:]
+
     _todos = todos
     _save_todos_to_disk(todos)
     return f"Updated plan with {len(todos)} tasks."
@@ -78,7 +92,18 @@ def read_todos() -> str:
     """Read the current task plan."""
     if not _todos:
         return "No active plan."
-    return json.dumps(_todos, indent=2, ensure_ascii=False)
+
+    completed = sum(1 for t in _todos if t.get("status") == "completed")
+    active = len(_todos) - completed
+    result = json.dumps(_todos, indent=2, ensure_ascii=False)
+
+    # Hint: if all items are completed, the plan is done — start fresh next time
+    if active == 0 and completed > 0:
+        result += (
+            "\n\n[All tasks completed. For the next task, call write_todos "
+            "with ONLY the new plan items — do not carry these over.]"
+        )
+    return result
 
 
 # --- STATE.md tool --------------------------------------------------------
@@ -765,7 +790,10 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
     parts.append(
         "## Task Planning\n\n"
         "For complex multi-step tasks, use `write_todos` to create a plan before executing. "
-        "Update task statuses as you work through them. Use `read_todos` to review the current plan."
+        "Update task statuses as you work through them. Use `read_todos` to review the current plan.\n\n"
+        "**IMPORTANT**: Each new task gets a FRESH plan. When starting a new task, call "
+        "`write_todos` with ONLY the new steps — do NOT include completed items from "
+        "previous tasks. Old completed items are auto-archived."
     )
 
     parts.append(
