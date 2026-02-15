@@ -224,6 +224,28 @@ async def _chat_loop(
 
         # Callback handler — shared between CLI and Telegram so both show tool traces
         cli_callback = create_cli_callback(verbose=verbose or True, debug=debug)
+        callbacks: list = [cli_callback]
+
+        # Langfuse tracing (opt-in via LANGFUSE_ENABLED=true)
+        from octo.config import LANGFUSE_ENABLED
+        if LANGFUSE_ENABLED:
+            try:
+                from langfuse import Langfuse
+                from langfuse.langchain import CallbackHandler as LangfuseHandler
+                from octo.config import LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_HOST
+                # Initialize the Langfuse client singleton (v3)
+                Langfuse(
+                    public_key=LANGFUSE_PUBLIC_KEY,
+                    secret_key=LANGFUSE_SECRET_KEY,
+                    host=LANGFUSE_HOST,
+                )
+                langfuse_handler = LangfuseHandler()
+                callbacks.append(langfuse_handler)
+                ui.print_status("Langfuse tracing enabled", "green")
+            except ImportError:
+                ui.print_info("LANGFUSE_ENABLED=true but langfuse not installed (pip install langfuse)")
+            except Exception as exc:
+                ui.print_info(f"Langfuse init failed: {exc}")
 
         # Shared lock — prevents concurrent graph invocations from CLI, Telegram, heartbeat, and cron
         graph_lock = asyncio.Lock()
@@ -236,7 +258,7 @@ async def _chat_loop(
                 thread_id=thread_id,
                 on_message=lambda text: ui.print_telegram_message(text),
                 on_response=lambda text: ui.print_response(text, source="Octi"),
-                callbacks=[cli_callback],
+                callbacks=callbacks,
                 graph_lock=graph_lock,
             )
             await tg.start()
@@ -244,7 +266,8 @@ async def _chat_loop(
             ui.print_status("Telegram bot connected", "green")
         config = {
             "configurable": {"thread_id": thread_id},
-            "callbacks": [cli_callback],
+            "callbacks": callbacks,
+            "metadata": {"langfuse_session_id": thread_id},
         }
 
         # --- Proactive AI: heartbeat + cron ---
@@ -951,10 +974,13 @@ async def _chat_loop(
 
                         before_tokens = count_tokens_approximately(messages)
 
-                        # Keep last ~33% of messages by count (minimum 4)
+                        # Keep last ~33% of messages by count (minimum 4),
+                        # adjusting the split point to not orphan tool_call/ToolMessage pairs
+                        from octo.retry import _sanitize_compact_boundary, _dump_tool_messages
                         keep_count = max(4, len(messages) // 3)
-                        old_msgs = messages[:-keep_count]
-                        recent_msgs = messages[-keep_count:]
+                        split_idx = _sanitize_compact_boundary(messages, len(messages) - keep_count)
+                        old_msgs = messages[:split_idx]
+                        recent_msgs = messages[split_idx:]
 
                         if not old_msgs:
                             ui.print_info("Nothing to compact.")
@@ -965,6 +991,9 @@ async def _chat_loop(
                         if not removable:
                             ui.print_info("No removable messages found (missing IDs).")
                             continue
+
+                        # Dump ToolMessages to disk before removing
+                        _dump_tool_messages(removable, label="compact")
 
                         # Summarize old messages via low-tier LLM
                         summary_model = make_model(tier="low")
@@ -1322,6 +1351,13 @@ async def _chat_loop(
                     if result is None:
                         ui.print_info("Aborted.")
                     else:
+                        # Trim old tool results in checkpoint (save full to disk)
+                        try:
+                            from octo.retry import auto_trim_tool_results
+                            await auto_trim_tool_results(app, config)
+                        except Exception:
+                            pass
+
                         # Extract last AI response
                         response_text = ""
                         for msg in reversed(result.get("messages", [])):

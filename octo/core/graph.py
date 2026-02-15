@@ -101,7 +101,6 @@ def _build_pre_model_hook(model_name: str):
             truncated = content[:_MAX_MSG_CHARS] + (
                 f"\n\n... [truncated — original was {len(content):,} chars]"
             )
-            # Create a copy with truncated content
             return msg.model_copy(update={"content": truncated})
         if isinstance(content, list):
             # Separate image blocks (preserve as-is) from text blocks (truncate)
@@ -434,6 +433,15 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
         "**IMPORTANT**: Each new task gets a FRESH plan. When starting a new task, call "
         "`write_todos` with ONLY the new steps — do NOT include completed items from "
         "previous tasks. Old completed items are auto-archived."
+    )
+
+    parts.append(
+        "## Efficiency\n\n"
+        "For short or ambiguous user messages (under ~15 words, no clear task):\n"
+        "- Respond directly from your knowledge and memory first\n"
+        "- Do NOT launch tool calls to investigate unless specifically asked\n"
+        "- If you genuinely need more info, ask the user one clarifying question\n"
+        "- A 2-sentence answer is better than 10 tool calls followed by a paragraph"
     )
 
     parts.append(

@@ -63,7 +63,7 @@ def make_memory_tools(storage: StorageBackend) -> list:
 
     @tool
     async def read_memories(days: int = 3) -> str:
-        """Read recent daily memory files.
+        """Read recent daily memory files (excluding today — already in system prompt).
 
         Returns the contents of the last N days of memory files,
         most recent first. Useful for recalling recent context.
@@ -74,7 +74,7 @@ def make_memory_tools(storage: StorageBackend) -> list:
         today = date.today()
         entries = []
 
-        for i in range(days):
+        for i in range(1, days + 1):
             d = today - timedelta(days=i)
             path = f"memory/{d.isoformat()}.md"
             if await storage.exists(path):
@@ -145,7 +145,7 @@ def write_memory(content: str) -> str:
 
 @tool
 def read_memories(days: int = 3) -> str:
-    """Read recent daily memory files.
+    """Read recent daily memory files (excluding today — already in system prompt).
 
     Returns the contents of the last N days of memory files,
     most recent first. Useful for recalling recent context.
@@ -161,7 +161,7 @@ def read_memories(days: int = 3) -> str:
     today = date.today()
     entries = []
 
-    for i in range(days):
+    for i in range(1, days + 1):
         d = today - timedelta(days=i)
         path = MEMORY_DIR / f"{d.isoformat()}.md"
         if path.is_file():

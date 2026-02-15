@@ -40,7 +40,7 @@ BUILTIN_PROFILES: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # Default middleware thresholds
 # ---------------------------------------------------------------------------
-DEFAULT_TOOL_RESULT_LIMIT = 40_000
+DEFAULT_TOOL_RESULT_LIMIT = 20_000
 DEFAULT_SUMMARIZATION_TRIGGER_TOKENS = 40_000
 DEFAULT_SUMMARIZATION_KEEP_TOKENS = 8_000
 DEFAULT_SUPERVISOR_MSG_CHAR_LIMIT = 30_000

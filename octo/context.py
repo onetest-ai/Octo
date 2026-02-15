@@ -34,10 +34,13 @@ def build_system_prompt() -> str:
         if text:
             parts.append(text)
 
-    # Today's memory
+    # Today's memory (capped to keep system prompt lean)
     today = date.today().isoformat()
     mem = _read_if_exists(MEMORY_DIR / f"{today}.md")
     if mem:
+        _MEM_CAP = 3000
+        if len(mem) > _MEM_CAP:
+            mem = "[... earlier entries omitted ...]\n" + mem[-_MEM_CAP:]
         parts.append(f"# Today's Memory ({today})\n\n{mem}")
 
     # Long-term memory

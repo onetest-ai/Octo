@@ -165,9 +165,15 @@ PLANS_DIR.mkdir(exist_ok=True)
 RESEARCH_WORKSPACE = OCTO_DIR / "workspace"
 RESEARCH_WORKSPACE.mkdir(exist_ok=True)
 
+# --- Langfuse observability ---
+LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "false").lower() in ("true", "1", "yes")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
 # --- Middleware ---
 # Tool result truncation — max chars before a single tool result is cut
-TOOL_RESULT_LIMIT = int(os.getenv("TOOL_RESULT_LIMIT", "40000"))
+TOOL_RESULT_LIMIT = int(os.getenv("TOOL_RESULT_LIMIT", "20000"))
 
 # Summarization — fraction of context window that triggers compaction
 SUMMARIZATION_TRIGGER_FRACTION = float(os.getenv("SUMMARIZATION_TRIGGER_FRACTION", "0.7"))
