@@ -218,6 +218,7 @@ class TelegramTransport:
         on_response: Callable[[str], None] | None = None,
         callbacks: list | None = None,
         graph_lock: asyncio.Lock | None = None,
+        on_command: Callable[[str, str], Any] | None = None,
     ) -> None:
         self.graph_app = graph_app
         self.thread_id = thread_id
@@ -225,6 +226,7 @@ class TelegramTransport:
         self.on_response = on_response  # called when AI response is ready
         self.callbacks = callbacks or [] # LangChain callbacks (e.g. CLI tool panels)
         self.graph_lock = graph_lock     # shared lock to prevent races with heartbeat/cron
+        self.on_command = on_command     # async (cmd, args) -> str | None for slash commands
         self._app: Application | None = None
         # VP notification tracking: telegram_msg_id → {teams_chat_id, teams_message_id}
         self._vp_notifications: dict[int, dict[str, str]] = {}
@@ -493,6 +495,24 @@ class TelegramTransport:
         if reply_to and reply_to.message_id in self._vp_notifications:
             await self._handle_vp_reply(update, user_text)
             return
+
+        # --- Slash command routing → CLI command handler ---
+        if user_text.startswith("/") and self.on_command:
+            parts = user_text.split(maxsplit=1)
+            cmd = parts[0][1:]  # strip leading /
+            args = parts[1] if len(parts) > 1 else ""
+            if self.on_message:
+                self.on_message(f"[{sender}] {user_text}")
+            try:
+                result = await self.on_command(cmd, args)
+                if result is not None:
+                    await self._reply(update, result)
+                    return
+                # result is None → command not recognized, fall through to graph
+            except Exception as e:
+                logger.exception("Telegram command /%s failed", cmd)
+                await update.message.reply_text(f"Command failed: {e}")
+                return
 
         # Show in CLI console immediately
         if self.on_message:
@@ -923,7 +943,10 @@ class TelegramTransport:
         self._app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         self._app.add_handler(CommandHandler("authorize", self._handle_authorize))
         self._app.add_handler(CommandHandler("revoke", self._handle_revoke))
+        # Non-slash text → graph. Slash commands not caught by CommandHandlers
+        # above are routed via a separate handler to on_command callback.
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
+        self._app.add_handler(MessageHandler(filters.COMMAND, self._handle_message))
         self._app.add_handler(MessageHandler(filters.Document.ALL, self._handle_document))
         self._app.add_handler(MessageHandler(filters.PHOTO, self._handle_document))
         self._app.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
@@ -931,6 +954,23 @@ class TelegramTransport:
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
+
+        # Register command menu with Telegram so users see autocomplete
+        from telegram import BotCommand
+        await self._app.bot.set_my_commands([
+            BotCommand("help", "Show available commands"),
+            BotCommand("clear", "Reset conversation (new thread)"),
+            BotCommand("compact", "Free context space"),
+            BotCommand("context", "Context window usage"),
+            BotCommand("agents", "List loaded agents"),
+            BotCommand("skills", "List / manage skills"),
+            BotCommand("mcp", "MCP server status / management"),
+            BotCommand("model", "Show current model"),
+            BotCommand("reload", "Hot-reload graph and config"),
+            BotCommand("restart", "Cold-restart process"),
+            BotCommand("authorize", "Authorize a user (owner only)"),
+            BotCommand("revoke", "Revoke user access (owner only)"),
+        ])
         logger.info("Telegram bot started")
 
     async def stop(self) -> None:

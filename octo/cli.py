@@ -216,7 +216,8 @@ async def _chat_loop(
                             "/projects update", "/projects remove", "/projects reload",
                             "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
-                            "/create-agent", "/create-skill", "/state", "/memory", "exit", "quit"]
+                            "/create-agent", "/create-skill", "/reload", "/restart",
+                            "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
                       + [f"/{s.name}" for s in skills]
                       + [f"/{a.name}" for a in agent_configs])
@@ -372,12 +373,322 @@ async def _chat_loop(
             cron_scheduler._app = app
             if vp_poller is not None:
                 vp_poller._octo_app = app
+            if tg is not None:
+                tg.graph_app = app
             # Refresh tab-completion with new skill and agent names
             ui.setup_input(
                 _BASE_SLASH_CMDS
                 + [f"/{s.name}" for s in skills]
                 + [f"/{a.name}" for a in agent_configs]
             )
+
+        async def _tg_command_handler(cmd: str, args: str) -> str | None:
+            """Handle slash commands from Telegram. Returns response text or None to pass through."""
+            nonlocal thread_id
+
+            if cmd == "help":
+                return (
+                    "**Telegram commands:**\n"
+                    "`/clear` — Reset conversation\n"
+                    "`/compact` — Free context space\n"
+                    "`/context` — Context window usage\n"
+                    "`/agents` — List agents\n"
+                    "`/skills` — List skills\n"
+                    "`/skills search <q>` — Search skill registry\n"
+                    "`/skills install <name>` — Install skill\n"
+                    "`/skills remove <name>` — Remove skill\n"
+                    "`/mcp` — MCP server status\n"
+                    "`/mcp find <q>` — Search MCP registry\n"
+                    "`/mcp remove <name>` — Remove MCP server\n"
+                    "`/mcp disable <name>` — Disable MCP server\n"
+                    "`/mcp enable <name>` — Enable MCP server\n"
+                    "`/model` — Show current model\n"
+                    "`/reload` — Hot-reload (re-reads .env, MCP, agents, skills)\n"
+                    "`/restart` — Cold-restart process (same thread)\n"
+                    "`/help` — This message\n\n"
+                    "Unrecognized `/commands` pass through to the AI."
+                )
+
+            # ── Session management ───────────────────────────────────────
+
+            if cmd == "clear":
+                thread_id = str(uuid.uuid4())[:8]
+                config["configurable"]["thread_id"] = thread_id
+                cli_callback.reset_step_counter()
+                save_session(thread_id, model=active_model)
+                if tg is not None:
+                    tg.thread_id = thread_id
+                return f"Conversation cleared. New thread: `{thread_id}`"
+
+            if cmd == "compact":
+                from langchain_core.messages import RemoveMessage, SystemMessage
+                from langchain_core.messages.utils import count_tokens_approximately
+                from octo.retry import _sanitize_compact_boundary, _dump_tool_messages
+
+                state = await app.aget_state(config)
+                messages = state.values.get("messages", [])
+                if len(messages) < 6:
+                    return "Conversation too short to compact."
+
+                before_tokens = count_tokens_approximately(messages)
+                keep_count = max(4, len(messages) // 3)
+                split_idx = _sanitize_compact_boundary(messages, len(messages) - keep_count)
+                old_msgs = messages[:split_idx]
+                recent_msgs = messages[split_idx:]
+
+                if not old_msgs:
+                    return "Nothing to compact."
+
+                removable = [m for m in old_msgs if getattr(m, "id", None)]
+                if not removable:
+                    return "No removable messages found."
+
+                _dump_tool_messages(removable, label="compact")
+
+                summary_model = make_model(tier="low")
+                summary_lines = []
+                for m in old_msgs:
+                    role = getattr(m, "type", "unknown")
+                    content = m.content if isinstance(m.content, str) else str(m.content)
+                    if content.strip():
+                        summary_lines.append(f"[{role}]: {content[:300]}")
+                summary_prompt = (
+                    "Summarize this conversation concisely in 2-3 paragraphs. "
+                    "Focus on: decisions made, tasks completed, and current objectives.\n\n"
+                    + "\n".join(summary_lines[-100:])
+                )
+                summary_response = await summary_model.ainvoke(summary_prompt)
+                summary_msg = SystemMessage(
+                    content=(
+                        "[Conversation summary — earlier messages were compacted]\n\n"
+                        + summary_response.content
+                    )
+                )
+
+                remove_ops = [RemoveMessage(id=m.id) for m in removable]
+                await app.aupdate_state(config, {"messages": remove_ops + [summary_msg]})
+
+                after_tokens = count_tokens_approximately([summary_msg] + recent_msgs)
+                return (
+                    f"Compacted: {before_tokens:,} → {after_tokens:,} tokens "
+                    f"({len(messages)} → {len(recent_msgs) + 1} messages, "
+                    f"{len(removable)} removed)"
+                )
+
+            if cmd == "context":
+                from octo.graph import context_info
+                used = context_info.get("used", 0)
+                limit = context_info.get("limit", 200_000)
+                pct = (used / limit * 100) if limit > 0 else 0
+                if pct < 30:
+                    label = "PEAK"
+                elif pct < 50:
+                    label = "GOOD"
+                elif pct < 70:
+                    label = "DEGRADING"
+                else:
+                    label = "POOR"
+                bar_len = 20
+                filled = int(bar_len * pct / 100)
+                bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
+                return f"`{bar}` {pct:.0f}% ({used:,}/{limit:,} tokens) **{label}**"
+
+            # ── Info ─────────────────────────────────────────────────────
+
+            if cmd == "agents":
+                if not agent_configs:
+                    return "No agents loaded."
+                lines = [f"• `{a.name}` — {a.description or '(no description)'}" for a in agent_configs]
+                return "**Agents:**\n" + "\n".join(lines)
+
+            if cmd == "model":
+                return f"Current model: `{active_model}`"
+
+            # ── Skills management ────────────────────────────────────────
+
+            if cmd == "skills":
+                sub = args.split(maxsplit=1)[0] if args else ""
+                sub_arg = args.split(maxsplit=1)[1].strip() if args and " " in args else ""
+
+                if not sub:
+                    if not skills:
+                        return "No skills loaded."
+                    lines = [f"• `{s.name}` — {s.description or '(no description)'}" for s in skills]
+                    return "**Skills:**\n" + "\n".join(lines)
+
+                if sub == "search":
+                    if not sub_arg:
+                        return "Usage: `/skills search <query>`"
+                    from octo.skills_cli import _fetch_registry
+                    registry = _fetch_registry()
+                    results = []
+                    q = sub_arg.lower()
+                    for entry in registry:
+                        if (q in entry["name"].lower()
+                                or q in entry.get("description", "").lower()
+                                or any(q in t.lower() for t in entry.get("tags", []))):
+                            results.append(entry)
+                    if not results:
+                        return f"No skills found for '{sub_arg}'."
+                    lines = [
+                        f"• `{e['name']}` v{e.get('version', '?')} — {e.get('description', '')[:60]}"
+                        for e in results[:15]
+                    ]
+                    return f"**{len(results)} skill(s) found:**\n" + "\n".join(lines)
+
+                if sub == "install":
+                    if not sub_arg:
+                        return "Usage: `/skills install <name>`"
+                    from octo.skills_cli import (
+                        _download_skill_files, _fetch_registry, _find_in_registry,
+                        _install_deps,
+                    )
+                    from octo.config import SKILLS_DIR
+                    import shutil
+                    skill_name = sub_arg.split()[0]
+                    registry = _fetch_registry()
+                    entry = _find_in_registry(registry, skill_name)
+                    if not entry:
+                        return f"Skill '{skill_name}' not found. Try: `/skills search`"
+                    dest = SKILLS_DIR / skill_name
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    files = entry.get("files", ["SKILL.md"])
+                    _download_skill_files(skill_name, files)
+                    _install_deps(skill_name)
+                    await _rebuild_graph()
+                    return (
+                        f"Installed `{skill_name}` v{entry.get('version', '?')}. "
+                        f"{len(skills)} skill(s) loaded."
+                    )
+
+                if sub == "remove":
+                    if not sub_arg:
+                        return "Usage: `/skills remove <name>`"
+                    from octo.config import SKILLS_DIR
+                    import shutil
+                    skill_name = sub_arg.split()[0]
+                    dest = SKILLS_DIR / skill_name
+                    if not dest.is_dir():
+                        return f"Skill '{skill_name}' is not installed."
+                    shutil.rmtree(dest)
+                    await _rebuild_graph()
+                    return f"Removed `{skill_name}`. {len(skills)} skill(s) loaded."
+
+                return "Usage: `/skills [search <q>|install <name>|remove <name>]`"
+
+            # ── MCP management ───────────────────────────────────────────
+
+            if cmd == "mcp":
+                from octo.mcp_manager import (
+                    mcp_disable, mcp_enable, mcp_get_status,
+                    mcp_registry_search, mcp_remove,
+                )
+                sub = args.split(maxsplit=1)[0] if args else ""
+                sub_arg = args.split(maxsplit=1)[1].strip() if args and " " in args else ""
+
+                if not sub:
+                    statuses = mcp_get_status(mcp_tools_by_server)
+                    if not statuses:
+                        return "No MCP servers configured."
+                    lines = []
+                    for s in statuses:
+                        status = "disabled" if s.get("disabled") else f"{s.get('tools', 0)} tools"
+                        lines.append(f"• `{s['name']}` — {status}")
+                    return "**MCP servers:**\n" + "\n".join(lines)
+
+                if sub == "find":
+                    if not sub_arg:
+                        return "Usage: `/mcp find <query>`"
+                    results = mcp_registry_search(sub_arg)
+                    if not results:
+                        return f"No MCP servers found for '{sub_arg}'."
+                    lines = [
+                        f"• `{r.get('name', '?')}` — {r.get('description', '')[:60]}"
+                        for r in results[:10]
+                    ]
+                    return f"**{len(results)} server(s) found:**\n" + "\n".join(lines)
+
+                if sub == "remove":
+                    if not sub_arg:
+                        return "Usage: `/mcp remove <name>`"
+                    if mcp_remove(sub_arg):
+                        await _rebuild_graph()
+                        return f"Removed `{sub_arg}`. {len(mcp_tools_by_server)} server(s) remaining."
+                    return f"Server '{sub_arg}' not found."
+
+                if sub == "disable":
+                    if not sub_arg:
+                        return "Usage: `/mcp disable <name>`"
+                    if mcp_disable(sub_arg):
+                        await _rebuild_graph()
+                        return f"Disabled `{sub_arg}`."
+                    return f"Server '{sub_arg}' not found."
+
+                if sub == "enable":
+                    if not sub_arg:
+                        return "Usage: `/mcp enable <name>`"
+                    if mcp_enable(sub_arg):
+                        await _rebuild_graph()
+                        return f"Enabled `{sub_arg}`."
+                    return f"Server '{sub_arg}' not found."
+
+                if sub == "reload":
+                    await _rebuild_graph()
+                    return (
+                        f"Reloaded: {len(mcp_tools)} tools from "
+                        f"{len(mcp_tools_by_server)} server(s)"
+                    )
+
+                if sub == "install":
+                    # Interactive wizard can't run over Telegram — route to AI
+                    return None
+
+                return "Usage: `/mcp [find <q>|remove <name>|disable <name>|enable <name>|reload]`"
+
+            # ── System ───────────────────────────────────────────────────
+
+            if cmd == "reload":
+                from dotenv import load_dotenv
+                load_dotenv(override=True)
+                import importlib
+                import octo.config as _config_mod
+                importlib.reload(_config_mod)
+                await _rebuild_graph()
+                return (
+                    f"Reloaded: {len(mcp_tools)} tools, "
+                    f"{len(agent_configs)} agents, "
+                    f"{len(skills)} skills"
+                )
+
+            if cmd == "restart":
+                import sys as _sys
+                import os as _os
+                await heartbeat.stop()
+                await cron_scheduler.stop()
+                if vp_poller is not None:
+                    vp_poller.stop()
+                if tg:
+                    await tg.stop()
+                await session_pool.close_all()
+                restart_args = [_sys.executable, "-m", "octo", "chat",
+                                "--thread", thread_id]
+                if verbose:
+                    restart_args.append("--verbose")
+                if debug:
+                    restart_args.append("--debug")
+                if voice_mod.is_enabled():
+                    restart_args.append("--voice")
+                if no_telegram:
+                    restart_args.append("--no-telegram")
+                _os.execv(_sys.executable, restart_args)
+
+            # Unknown command — return None to pass through to graph as text
+            return None
+
+        # Wire up Telegram command handler
+        if tg is not None:
+            tg.on_command = _tg_command_handler
 
         async def _auto_handoff(app_ref, cfg, model_factory):
             """Save project state on exit using a cheap LLM summarization."""
@@ -1241,6 +1552,45 @@ async def _chat_loop(
                         await _rebuild_graph()
                         ui.print_info(f"Done. {len(skills)} skill(s) loaded.")
                     continue
+
+                if user_input == "/reload":
+                    ui.print_info("Reloading graph (MCP servers, agents, skills, config)...")
+                    from dotenv import load_dotenv
+                    load_dotenv(override=True)
+                    import importlib
+                    import octo.config as _config_mod
+                    importlib.reload(_config_mod)
+                    await _rebuild_graph()
+                    ui.print_info(
+                        f"Reloaded: {len(mcp_tools)} tools, "
+                        f"{len(agent_configs)} agents, "
+                        f"{len(skills)} skills"
+                    )
+                    continue
+
+                if user_input == "/restart":
+                    import sys as _sys
+                    import os as _os
+                    ui.print_info(f"Restarting Octo (thread {thread_id})...")
+                    await heartbeat.stop()
+                    await cron_scheduler.stop()
+                    if vp_poller is not None:
+                        vp_poller.stop()
+                    if tg:
+                        await tg.stop()
+                    await session_pool.close_all()
+                    # Preserve current flags for session continuity
+                    restart_args = [_sys.executable, "-m", "octo", "chat",
+                                    "--thread", thread_id]
+                    if verbose:
+                        restart_args.append("--verbose")
+                    if debug:
+                        restart_args.append("--debug")
+                    if voice_mod.is_enabled():
+                        restart_args.append("--voice")
+                    if no_telegram:
+                        restart_args.append("--no-telegram")
+                    _os.execv(_sys.executable, restart_args)
 
                 # Check for skill or agent invocation
                 if user_input.startswith("/"):

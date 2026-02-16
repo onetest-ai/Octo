@@ -651,6 +651,8 @@ def print_help() -> None:
         ("/vp [cmd]", "Virtual Persona (status/enable/disable/allow/block/test/stats)"),
         ("/create-agent", "AI-assisted agent creation wizard"),
         ("/create-skill", "AI-assisted skill creation wizard"),
+        ("/reload", "Hot-reload graph (re-reads .env, MCP, agents, skills)"),
+        ("/restart", "Cold-restart process (same thread, full reset)"),
         ("/voice on|off", "Toggle TTS"),
         ("/model <name>", "Switch model"),
         ("/<agent> <prompt>", "Send prompt directly to a specific agent"),
