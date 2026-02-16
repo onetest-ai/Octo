@@ -1,6 +1,6 @@
 [project]
 name = "octo-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "AI agent engine — embeddable LangGraph supervisor with multi-agent orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,7 @@ dependencies = [
     "langchain-anthropic",
     "langchain-aws",
     "langchain-openai",
+    "langchain-google-genai>=4.0",
     "langchain-mcp-adapters",
     "langgraph>=1.0.8",
     "langgraph-supervisor",

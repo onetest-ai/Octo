@@ -428,3 +428,45 @@ def build_summarization_middleware(
         trigger=("tokens", trigger_tokens or SUMMARIZATION_TRIGGER_TOKENS),
         keep=("tokens", keep_tokens or SUMMARIZATION_KEEP_TOKENS),
     )
+
+
+# ---------------------------------------------------------------------------
+# Prompt caching — Bedrock (cachePoint)
+# ---------------------------------------------------------------------------
+
+class BedrockCachingMiddleware(AgentMiddleware):
+    """Add Bedrock prompt caching (cachePoint) to system messages.
+
+    Bedrock Converse API supports prompt caching via ``cachePoint`` blocks
+    in the system parameter.  ``_lc_content_to_bedrock()`` passes through
+    dict blocks without a top-level ``"type"`` key as-is, so
+    ``{"cachePoint": {"type": "default"}}`` flows through to the API.
+
+    For non-Bedrock models, this middleware is a no-op.
+    """
+
+    def _apply_caching(self, request):
+        """Return modified request if Bedrock, else None."""
+        try:
+            from langchain_aws import ChatBedrockConverse
+        except ImportError:
+            return None
+        if not isinstance(request.model, ChatBedrockConverse):
+            return None
+        sys_msg = request.system_message
+        if sys_msg and isinstance(sys_msg.content, str):
+            new_content = [
+                {"type": "text", "text": sys_msg.content},
+                {"cachePoint": {"type": "default"}},
+            ]
+            new_sys = sys_msg.model_copy(update={"content": new_content})
+            return request.override(system_message=new_sys)
+        return None
+
+    def wrap_model_call(self, request, handler):
+        updated = self._apply_caching(request)
+        return handler(updated if updated else request)
+
+    async def awrap_model_call(self, request, handler):
+        updated = self._apply_caching(request)
+        return await handler(updated if updated else request)

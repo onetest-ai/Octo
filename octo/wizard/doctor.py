@@ -79,6 +79,8 @@ def _check_provider_credentials() -> CheckResult:
         AZURE_OPENAI_API_KEY,
         AZURE_OPENAI_ENDPOINT,
         GITHUB_TOKEN,
+        GOOGLE_API_KEY,
+        OPENAI_API_BASE,
         OPENAI_API_KEY,
     )
 
@@ -98,6 +100,10 @@ def _check_provider_credentials() -> CheckResult:
         providers.append("azure")
     if GITHUB_TOKEN:
         providers.append("github")
+    if GOOGLE_API_KEY:
+        providers.append("gemini")
+    if OPENAI_API_BASE:
+        providers.append("local")
 
     if warnings and not providers:
         return CheckResult(
@@ -132,7 +138,9 @@ async def _check_llm_connectivity() -> CheckResult:
             AZURE_OPENAI_API_VERSION,
             AZURE_OPENAI_ENDPOINT,
             GITHUB_TOKEN,
+            GOOGLE_API_KEY,
             LOW_TIER_MODEL,
+            OPENAI_API_BASE,
             OPENAI_API_KEY,
         )
         from octo.models import _detect_provider, resolve_model_name
@@ -147,10 +155,12 @@ async def _check_llm_connectivity() -> CheckResult:
             "AWS_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
             "AWS_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
             "OPENAI_API_KEY": OPENAI_API_KEY,
+            "OPENAI_API_BASE": OPENAI_API_BASE,
             "AZURE_OPENAI_API_KEY": AZURE_OPENAI_API_KEY,
             "AZURE_OPENAI_ENDPOINT": AZURE_OPENAI_ENDPOINT,
             "AZURE_OPENAI_API_VERSION": AZURE_OPENAI_API_VERSION,
             "GITHUB_TOKEN": GITHUB_TOKEN,
+            "GOOGLE_API_KEY": GOOGLE_API_KEY,
         }
 
         ok, msg = validate_provider(provider, creds, LOW_TIER_MODEL)

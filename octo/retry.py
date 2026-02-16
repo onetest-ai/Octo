@@ -219,6 +219,49 @@ async def auto_trim_tool_results(app: Any, config: dict) -> bool:
         return False
 
 
+async def _flush_memory_before_compact(old_msgs: list) -> None:
+    """Best-effort: extract critical facts from soon-to-be-dropped messages.
+
+    Uses a cheap LLM call to identify important context (decisions, user
+    preferences, task outcomes) and persists them via ``write_memory``
+    so they survive compaction.
+    """
+    try:
+        from octo.models import make_model
+        from octo.core.tools.memory import write_memory
+
+        lines: list[str] = []
+        for m in old_msgs:
+            role = getattr(m, "type", "unknown")
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            if content.strip():
+                lines.append(f"[{role}]: {content[:200]}")
+
+        if not lines:
+            return
+
+        prompt = (
+            "Conversation below is about to be permanently removed. "
+            "Extract ONLY critical items worth remembering long-term:\n"
+            "- User preferences or personal facts\n"
+            "- Important decisions made\n"
+            "- Task outcomes and lessons learned\n\n"
+            "If nothing worth saving, respond with NOTHING.\n"
+            "Otherwise, respond with a concise bulleted list (max 5 items).\n\n"
+            + "\n".join(lines[-60:])
+        )
+
+        model = make_model(tier="low")
+        response = await model.ainvoke(prompt)
+        extracted = response.content.strip()
+
+        if extracted and extracted.upper() != "NOTHING":
+            write_memory.invoke(f"[auto-saved before compaction] {extracted}")
+            logger.info("Flushed memory before compaction: %d chars", len(extracted))
+    except Exception:
+        logger.debug("Memory flush before compaction failed (non-blocking)", exc_info=True)
+
+
 async def auto_compact(app: Any, config: dict) -> bool:
     """Run automatic context compaction. Returns True if successful.
 
@@ -241,6 +284,9 @@ async def auto_compact(app: Any, config: dict) -> bool:
         removable = [m for m in old_msgs if getattr(m, "id", None)]
         if not removable:
             return False
+
+        # Flush important context to memory before dropping old messages
+        await _flush_memory_before_compact(old_msgs)
 
         # Dump ToolMessages to disk before removing
         _dump_tool_messages(removable, label="auto-compact")
@@ -422,6 +468,75 @@ async def auto_clean_corrupted(app: Any, config: dict) -> bool:
         return False
 
 
+_COMPACT_MSG_THRESHOLD = 80  # auto-compact if message count exceeds this
+
+
+async def _post_invoke_maintenance(app: Any, config: dict) -> None:
+    """Run post-invocation maintenance: trim old tool results + proactive compact.
+
+    Called after every successful graph invocation (both CLI and Telegram).
+    This is the single place for checkpoint hygiene — no transport-specific code.
+    """
+    try:
+        trimmed = await auto_trim_tool_results(app, config)
+        if trimmed:
+            logger.debug("Post-invoke: trimmed old tool results")
+    except Exception:
+        logger.debug("Post-invoke: auto_trim failed", exc_info=True)
+
+    # Proactive compact based on message count
+    try:
+        state = await app.aget_state(config)
+        messages = state.values.get("messages", [])
+        if len(messages) > _COMPACT_MSG_THRESHOLD:
+            logger.info(
+                "Message count %d exceeds threshold %d, running proactive compact",
+                len(messages), _COMPACT_MSG_THRESHOLD,
+            )
+            await auto_compact(app, config)
+    except Exception:
+        logger.debug("Post-invoke: proactive compact check failed", exc_info=True)
+
+
+def _has_substantive_response(result: dict | None) -> bool:
+    """Check if the graph result contains a substantive AI response.
+
+    Bedrock sometimes returns empty AIMessages in <50ms without raising an
+    exception (likely payload rejection or transient issue).  The graph
+    terminates "successfully" but produces no useful output.
+    """
+    if not result:
+        return False
+    messages = result.get("messages", [])
+    if not messages:
+        return False
+
+    # Check the last few messages for any AI content
+    for msg in reversed(messages[-5:]):
+        msg_type = getattr(msg, "type", "")
+        if msg_type != "ai":
+            continue
+        content = getattr(msg, "content", "")
+        if isinstance(content, list):
+            text = " ".join(
+                b.get("text", "") if isinstance(b, dict) else str(b)
+                for b in content
+            ).strip()
+        elif isinstance(content, str):
+            text = content.strip()
+        else:
+            text = ""
+        # Has tool calls → substantive (agent acted, even if no text)
+        if getattr(msg, "tool_calls", None):
+            return True
+        if text:
+            return True
+    return False
+
+
+_EMPTY_RESPONSE_RETRIES = 2  # max retries for empty responses
+
+
 async def invoke_with_retry(
     app: Any,
     input_data: dict,
@@ -443,10 +558,34 @@ async def invoke_with_retry(
         The original exception if all retries are exhausted.
     """
     last_error: BaseException | None = None
+    empty_retries = 0
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return await app.ainvoke(input_data, config=config)
+            result = await app.ainvoke(input_data, config=config)
+
+            # Post-invocation: detect empty Bedrock responses
+            if not _has_substantive_response(result):
+                empty_retries += 1
+                if empty_retries <= _EMPTY_RESPONSE_RETRIES:
+                    logger.warning(
+                        "Empty response from model (attempt %d/%d), retrying...",
+                        empty_retries, _EMPTY_RESPONSE_RETRIES,
+                    )
+                    if on_retry:
+                        await on_retry(
+                            f"Empty response, retrying ({empty_retries}/{_EMPTY_RESPONSE_RETRIES})...",
+                            attempt + 1,
+                        )
+                    await asyncio.sleep(2)
+                    continue
+                else:
+                    logger.warning("Empty response persists after %d retries", empty_retries)
+
+            # Post-invocation: trim old tool results + proactive compact
+            await _post_invoke_maintenance(app, config)
+
+            return result
         except Exception as e:
             category = _classify_error(e)
             last_error = e

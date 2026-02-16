@@ -89,6 +89,14 @@ def _build_model_config(config: Any) -> dict:
             model_config["github_base_url"] = creds["base_url"]
         if "anthropic_base_url" in creds:
             model_config["github_anthropic_base_url"] = creds["anthropic_base_url"]
+    if config.llm_provider == "gemini":
+        if "api_key" in creds:
+            model_config["google_api_key"] = creds["api_key"]
+    if config.llm_provider == "local":
+        if "base_url" in creds:
+            model_config["openai_api_base"] = creds["base_url"]
+        if "api_key" in creds:
+            model_config["openai_api_key"] = creds["api_key"]
 
     return model_config
 

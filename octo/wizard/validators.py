@@ -18,6 +18,8 @@ def validate_provider(
             "openai": _validate_openai,
             "azure": _validate_azure,
             "github": _validate_github,
+            "gemini": _validate_gemini,
+            "local": _validate_local,
         }.get(provider)
         if fn is None:
             return False, f"Unknown provider: {provider}"
@@ -96,3 +98,32 @@ def _validate_github(creds: dict[str, str], model_name: str) -> tuple[bool, str]
     )
     llm.invoke("Say 'ok'")
     return True, f"Connected to GitHub Models ({model})"
+
+
+def _validate_gemini(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    model = model_name or "gemini-2.5-flash-lite"
+    api_key = creds.get("GOOGLE_API_KEY", "")
+    kwargs: dict = {"model": model, "max_tokens": 16}
+    if api_key:
+        kwargs["api_key"] = api_key
+    llm = ChatGoogleGenerativeAI(**kwargs)
+    llm.invoke("Say 'ok'")
+    return True, f"Connected to Google Gemini ({model})"
+
+
+def _validate_local(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
+    from langchain_openai import ChatOpenAI
+
+    model = model_name or "test"
+    base_url = creds.get("OPENAI_API_BASE", "") or "http://localhost:8000/v1"
+    api_key = creds.get("OPENAI_API_KEY", "") or "not-needed"
+    llm = ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        max_tokens=16,
+    )
+    llm.invoke("Say 'ok'")
+    return True, f"Connected to local endpoint ({base_url}, model={model})"

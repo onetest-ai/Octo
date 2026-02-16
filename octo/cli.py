@@ -1351,13 +1351,6 @@ async def _chat_loop(
                     if result is None:
                         ui.print_info("Aborted.")
                     else:
-                        # Trim old tool results in checkpoint (save full to disk)
-                        try:
-                            from octo.retry import auto_trim_tool_results
-                            await auto_trim_tool_results(app, config)
-                        except Exception:
-                            pass
-
                         # Extract last AI response
                         response_text = ""
                         for msg in reversed(result.get("messages", [])):

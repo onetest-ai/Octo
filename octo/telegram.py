@@ -242,6 +242,51 @@ class TelegramTransport:
         except Exception:
             pass  # silently stop if chat action fails
 
+    async def _trim_history_if_needed(self, config: dict) -> None:
+        """Trim checkpoint history if it exceeds TELEGRAM_HISTORY_LIMIT.
+
+        Lighter-weight than auto_compact — removes old messages without LLM
+        summarization. Runs inside graph lock before every Telegram invocation.
+        """
+        from octo.config import TELEGRAM_HISTORY_LIMIT
+        if not TELEGRAM_HISTORY_LIMIT:
+            return
+
+        try:
+            state = await self.graph_app.aget_state(config)
+            messages = state.values.get("messages", [])
+
+            if len(messages) <= TELEGRAM_HISTORY_LIMIT:
+                return
+
+            from langchain_core.messages import RemoveMessage, SystemMessage
+            from octo.retry import _sanitize_compact_boundary
+
+            split_idx = _sanitize_compact_boundary(
+                messages, len(messages) - TELEGRAM_HISTORY_LIMIT,
+            )
+            removable = [m for m in messages[:split_idx] if getattr(m, "id", None)]
+            if not removable:
+                return
+
+            marker = SystemMessage(
+                content=(
+                    f"[Telegram history trimmed — {len(removable)} older "
+                    f"messages removed to stay within {TELEGRAM_HISTORY_LIMIT} "
+                    f"message limit.]"
+                )
+            )
+            remove_ops = [RemoveMessage(id=m.id) for m in removable]
+            await self.graph_app.aupdate_state(
+                config, {"messages": remove_ops + [marker]},
+            )
+            logger.info(
+                "Telegram history trimmed: %d -> %d messages",
+                len(messages), len(messages) - len(removable) + 1,
+            )
+        except Exception:
+            logger.debug("Telegram history trim failed (non-blocking)", exc_info=True)
+
     async def _invoke_graph(self, chat_id: int, user_content: str | list, sender_name: str = "") -> str:
         """Send user content through the graph with typing indicator.
 
@@ -273,6 +318,7 @@ class TelegramTransport:
             if self.graph_lock:
                 await self.graph_lock.acquire()
             try:
+                await self._trim_history_if_needed(config)
                 result = await invoke_with_retry(
                     self.graph_app,
                     {"messages": [HumanMessage(content=tagged)]},

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from octo.config import PERSONA_DIR, MEMORY_DIR, STATE_PATH
+from octo.config import PERSONA_DIR, MEMORY_DIR, STATE_PATH, SYSTEM_PROMPT_BUDGET
 
 
 def _read_if_exists(path: Path) -> str:
@@ -53,4 +53,22 @@ def build_system_prompt() -> str:
     if state:
         parts.append(f"# Current Project State\n\n{state}")
 
-    return "\n\n---\n\n".join(parts)
+    # Enforce budget: truncate lowest-priority sections first.
+    # Parts order: [0]=date, [1..4]=identity files, [5+]=memory/state (lower priority)
+    _SEP = "\n\n---\n\n"
+    total = sum(len(p) for p in parts) + len(_SEP) * max(0, len(parts) - 1)
+    if total > SYSTEM_PROMPT_BUDGET:
+        overflow = total - SYSTEM_PROMPT_BUDGET
+        # Truncate from end (lowest priority first); protect indices 0..4
+        protected = min(5, len(parts))
+        for idx in range(len(parts) - 1, protected - 1, -1):
+            if overflow <= 0:
+                break
+            if len(parts[idx]) > 500:
+                cut = min(overflow, len(parts[idx]) - 500)
+                parts[idx] = parts[idx][:len(parts[idx]) - cut] + (
+                    "\n[... truncated to fit prompt budget ...]"
+                )
+                overflow -= cut
+
+    return _SEP.join(parts)

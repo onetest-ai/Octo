@@ -50,10 +50,14 @@ from octo.core.tools.telegram_tools import (
 
 _CONTEXT_LIMITS = {
     "claude": 200_000,
+    "gpt-4o": 128_000,
     "gpt-4": 128_000,
     "gpt-3.5": 16_000,
-    "o1": 128_000,
+    "o1": 200_000,
     "o3": 200_000,
+    "o4": 200_000,
+    "gemini": 1_000_000,
+    "local/": 32_000,      # conservative default; most local models are 4K-128K
 }
 
 # Module-level mutable state read by CLI for display
@@ -67,7 +71,22 @@ def _get_context_limit(model_name: str) -> int:
     return 200_000
 
 
-def _build_pre_model_hook(model_name: str):
+def _compute_tool_result_limit(model_name: str) -> int:
+    """Proportional tool result limit: min(context_chars * 0.15, 40_000).
+
+    If the user explicitly set TOOL_RESULT_LIMIT in .env, that value is
+    used instead (backward-compatible override).
+    """
+    import os
+    if os.getenv("TOOL_RESULT_LIMIT"):
+        from octo.config import TOOL_RESULT_LIMIT
+        return TOOL_RESULT_LIMIT
+    context_limit = _get_context_limit(model_name)
+    # 1 token ≈ 4 chars; limit tool results to 15% of context in chars
+    return min(int(context_limit * 4 * 0.15), 40_000)
+
+
+def _build_pre_model_hook(model_name: str, tool_count: int = 0):
     """Build a pre_model_hook that tracks context and auto-trims when needed.
 
     Two-stage protection against context overflow:
@@ -75,17 +94,36 @@ def _build_pre_model_hook(model_name: str):
        is cut to prevent one huge tool result from filling the window.
     2. **Trim old messages** — when total tokens exceed 70% of the limit,
        drop the oldest messages (keeping the newest ~40%).
+    3. **Prompt caching** — inject provider-specific cache breakpoints into
+       llm_input_messages so that system prompt and conversation prefix are
+       cached across turns (Anthropic 90% savings, Bedrock ~90% savings,
+       OpenAI/Azure automatic — no injection needed).
+
+    Args:
+        model_name: Model name for context limit detection.
+        tool_count: Number of tools bound to the supervisor. Used to estimate
+            tool schema token overhead (schemas are sent separately in
+            Bedrock Converse API but still count toward context).
     """
     import logging
     from langchain_core.messages import SystemMessage
 
+    from octo.models import _detect_provider
+
     _log = logging.getLogger("octo.graph")
     context_info["limit"] = _get_context_limit(model_name)
+    _provider = _detect_provider(model_name)
 
     _TRIM_THRESHOLD = 0.70   # start trimming at 70% usage
     _KEEP_RATIO = 0.40       # keep the newest 40% of messages
     _MIN_KEEP = 6            # never keep fewer than 6 messages
     _MAX_MSG_CHARS = SUPERVISOR_MSG_CHAR_LIMIT
+
+    # Tool schemas are sent separately in the API request but still consume
+    # context tokens.  Each tool schema averages ~800 tokens (name, description,
+    # JSON schema for parameters).  This isn't counted by
+    # count_tokens_approximately which only sees message content.
+    _TOOL_SCHEMA_OVERHEAD = tool_count * 800
 
     _IMAGE_BLOCK_TYPES = {"image_url", "image"}
 
@@ -164,13 +202,63 @@ def _build_pre_model_hook(model_name: str):
                 stripped.append(msg)
         return stripped
 
+    def _inject_cache_breakpoints(msgs):
+        """Inject provider-specific cache breakpoints into messages.
+
+        Breakpoint 1 (Anthropic + Bedrock): System message — most stable,
+        highest cache value.  Caches the full system prompt + tool schemas.
+
+        Breakpoint 2 (Anthropic only): Second-to-last message — caches the
+        growing conversation prefix so only the latest turn is re-processed.
+        Bedrock cachePoint is system-level only, not per-message.
+
+        OpenAI/Azure: Automatic prefix caching for identical prefixes ≥1024
+        tokens — no injection needed, 50% savings are free.
+        """
+        if _provider not in ("anthropic", "bedrock"):
+            return msgs
+
+        result = list(msgs)
+
+        # Breakpoint 1: system message
+        for i, msg in enumerate(result):
+            if isinstance(msg, SystemMessage):
+                content = msg.content
+                if isinstance(content, str):
+                    if _provider == "anthropic":
+                        result[i] = msg.model_copy(update={
+                            "content": [{"type": "text", "text": content,
+                                         "cache_control": {"type": "ephemeral"}}],
+                        })
+                    elif _provider == "bedrock":
+                        result[i] = msg.model_copy(update={
+                            "content": [{"type": "text", "text": content},
+                                        {"cachePoint": {"type": "default"}}],
+                        })
+                break  # only first system message
+
+        # Breakpoint 2: turn boundary — Anthropic only
+        if _provider == "anthropic" and len(result) >= 2:
+            msg = result[-2]
+            content = msg.content
+            if isinstance(content, str) and content:
+                result[-2] = msg.model_copy(update={
+                    "content": [{"type": "text", "text": content,
+                                 "cache_control": {"type": "ephemeral"}}],
+                })
+
+        return result
+
     def pre_model_hook(state):
         messages = state.get("messages", [])
 
         # Stage 1: truncate any oversized individual messages
         messages = [_truncate_message(m) for m in messages]
 
-        tokens = count_tokens_approximately(_strip_images_for_counting(messages))
+        msg_tokens = count_tokens_approximately(_strip_images_for_counting(messages))
+        # Add tool schema overhead — schemas are sent in the API request
+        # but not counted by count_tokens_approximately
+        tokens = msg_tokens + _TOOL_SCHEMA_OVERHEAD
         context_info["used"] = tokens
         limit = context_info["limit"]
 
@@ -178,10 +266,11 @@ def _build_pre_model_hook(model_name: str):
         if tokens > limit * _TRIM_THRESHOLD and len(messages) > _MIN_KEEP:
             keep = max(_MIN_KEEP, int(len(messages) * _KEEP_RATIO))
             trimmed = messages[-keep:]
-            trimmed_tokens = count_tokens_approximately(_strip_images_for_counting(trimmed))
+            trimmed_msg_tokens = count_tokens_approximately(_strip_images_for_counting(trimmed))
+            trimmed_tokens = trimmed_msg_tokens + _TOOL_SCHEMA_OVERHEAD
             _log.info(
-                "Auto-trimming context: %d→%d tokens (%d→%d messages)",
-                tokens, trimmed_tokens, len(messages), len(trimmed),
+                "Auto-trimming context: %d→%d tokens (%d→%d messages, tool schema overhead: %d)",
+                tokens, trimmed_tokens, len(messages), len(trimmed), _TOOL_SCHEMA_OVERHEAD,
             )
             context_info["used"] = trimmed_tokens
             marker = SystemMessage(
@@ -193,9 +282,10 @@ def _build_pre_model_hook(model_name: str):
             # Use llm_input_messages to send trimmed context to LLM
             # without accidentally growing the state via add_messages reducer.
             # State cleanup is handled by /compact and auto_compact in retry.py.
-            return {"llm_input_messages": [marker] + trimmed}
+            return {"llm_input_messages": _inject_cache_breakpoints([marker] + trimmed)}
 
-        return {"llm_input_messages": messages}
+        # Stage 3: inject cache breakpoints for prompt caching
+        return {"llm_input_messages": _inject_cache_breakpoints(messages)}
 
     return pre_model_hook
 
@@ -203,6 +293,10 @@ def _build_pre_model_hook(model_name: str):
 # --- Model tier assignment (profile-aware) --------------------------------
 
 _HIGH_TIER_KEYWORDS = {"architect", "planner", "rca-autofixer"}
+
+# Tier aliases recognized in AGENT.md `model:` field.
+# These are treated as tier hints, not literal model names.
+_TIER_ALIASES = {"high", "low", "default", "inherit", ""}
 
 
 def _agent_tier(name: str) -> str:
@@ -212,6 +306,50 @@ def _agent_tier(name: str) -> str:
         if kw in name:
             return profile.get("worker_high_keywords", "high")
     return profile.get("worker_default", "low")
+
+
+def _resolve_agent_model(cfg_model: str, fallback_tier: str):
+    """Resolve an agent's model from its AGENT.md `model:` field.
+
+    If the value is a tier alias (high, low, default, inherit, or empty),
+    use the corresponding tier.  Otherwise treat it as a literal model name
+    after validating it looks like a real model identifier.
+    """
+    if cfg_model in _TIER_ALIASES:
+        effective_tier = cfg_model if cfg_model in ("high", "low") else fallback_tier
+        return make_model(tier=effective_tier)
+
+    # Sanity check: model names should contain dots, dashes, or slashes
+    # (e.g. "claude-sonnet-4-5", "eu.anthropic.claude-...", "gpt-4o")
+    if not any(c in cfg_model for c in ".-/"):
+        logger.warning(
+            "Agent model '%s' looks like a tier alias, not a model ID. "
+            "Use 'high', 'low', 'default', or 'inherit' for tier-based "
+            "selection, or a full model identifier (e.g. "
+            "'eu.anthropic.claude-sonnet-4-5-v1').",
+            cfg_model,
+        )
+    return make_model(cfg_model, tier=fallback_tier)
+
+
+def _caching_middleware():
+    """Return (anthropic_cache, bedrock_cache) middleware instances.
+
+    - Anthropic: uses built-in AnthropicPromptCachingMiddleware (90% savings).
+    - Bedrock: uses custom BedrockCachingMiddleware (cachePoint blocks).
+    - OpenAI/Azure: automatic prefix caching — no middleware needed.
+
+    Both middlewares are no-ops for non-matching providers.
+    """
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    from octo.core.middleware import BedrockCachingMiddleware
+
+    anthropic_cache = AnthropicPromptCachingMiddleware(
+        unsupported_model_behavior="ignore",
+    )
+    bedrock_cache = BedrockCachingMiddleware()
+    return anthropic_cache, bedrock_cache
 
 
 def _build_project_agents(project_agents: list[AgentConfig]) -> list:
@@ -227,9 +365,11 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
     from octo.config import PROJECTS
     from octo.tools.claude_code import claude_code
 
+    from octo.models import resolve_model_name
+
     error_middleware = ToolErrorMiddleware()
-    result_limit_middleware = ToolResultLimitMiddleware()
     summarization_middleware = build_summarization_middleware()
+    anthropic_cache, bedrock_cache = _caching_middleware()
     workers = []
 
     for proj in PROJECTS.values():
@@ -276,13 +416,15 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
 
         tier = _agent_tier(proj.name)
         model = make_model(tier=tier)
+        worker_limit = _compute_tool_result_limit(resolve_model_name(tier=tier))
+        result_limit_mw = ToolResultLimitMiddleware(max_chars=worker_limit)
 
         agent = create_agent(
             model=model,
             tools=[claude_code],
             name=proj.name,
             system_prompt=prompt,
-            middleware=[error_middleware, result_limit_middleware, summarization_middleware],
+            middleware=[error_middleware, result_limit_mw, summarization_middleware, anthropic_cache, bedrock_cache],
         )
         workers.append(agent)
 
@@ -297,10 +439,12 @@ def _build_worker_agents(
 
     Skips configs with type='deep_research' — those are built separately.
     """
-    # Shared middleware
+    # Shared middleware (result_limit is per-worker due to proportional caps)
+    from octo.models import resolve_model_name
+
     error_middleware = ToolErrorMiddleware()
-    result_limit_middleware = ToolResultLimitMiddleware()
     summarization_middleware = build_summarization_middleware()
+    anthropic_cache, bedrock_cache = _caching_middleware()
 
     # Index builtin tools by name for agent-specific filtering
     builtin_by_name = {t.name: t for t in BUILTIN_TOOLS}
@@ -311,7 +455,9 @@ def _build_worker_agents(
             continue
 
         tier = _agent_tier(cfg.name)
-        model = make_model(cfg.model, tier=tier)
+        model = _resolve_agent_model(cfg.model, tier)
+        worker_limit = _compute_tool_result_limit(resolve_model_name(tier=tier))
+        result_limit_mw = ToolResultLimitMiddleware(max_chars=worker_limit)
 
         if cfg.tools:
             # Agent specifies tool names — resolve from both MCP and builtin
@@ -326,7 +472,7 @@ def _build_worker_agents(
             tools=agent_tools,
             name=cfg.name,
             system_prompt=cfg.system_prompt,
-            middleware=[error_middleware, result_limit_middleware, summarization_middleware],
+            middleware=[error_middleware, result_limit_mw, summarization_middleware, anthropic_cache, bedrock_cache],
         )
         workers.append(agent)
     return workers
@@ -371,7 +517,7 @@ def _build_deep_agents(
         if cfg.type != "deep_research":
             continue
 
-        model = make_model(cfg.model) if cfg.model else make_model()
+        model = _resolve_agent_model(cfg.model, "default")
 
         # Resolve MCP tools from agent's tools: list, or provide proxy
         if cfg.tools:
@@ -859,41 +1005,44 @@ async def build_graph(
     #    create_supervisor does NOT accept middleware, so this is the only
     #    way to get both error handling and result truncation at supervisor level.
     from octo.middleware import TRUNCATION_NOTICE
-    from octo.config import TOOL_RESULT_LIMIT
     from langgraph.prebuilt import ToolNode
+
+    # Proportional limit for supervisor tools (adapts to model context window)
+    from octo.models import resolve_model_name
+    _sup_tool_limit = _compute_tool_result_limit(resolve_model_name())
 
     class TruncatingToolNode(ToolNode):
         """ToolNode that truncates oversized results before they enter state."""
 
         def _truncate_content(self, content):
-            if isinstance(content, str) and len(content) > TOOL_RESULT_LIMIT:
+            limit = _sup_tool_limit
+            if isinstance(content, str) and len(content) > limit:
                 notice = TRUNCATION_NOTICE.format(
-                    original=len(content), limit=TOOL_RESULT_LIMIT,
+                    original=len(content), limit=limit,
                 )
-                return content[:TOOL_RESULT_LIMIT] + notice
+                return content[:limit] + notice
             if isinstance(content, list):
                 total = sum(len(str(p)) for p in content)
-                if total > TOOL_RESULT_LIMIT:
+                if total > limit:
                     truncated = []
                     running = 0
                     for part in content:
                         part_len = len(str(part))
-                        if running + part_len > TOOL_RESULT_LIMIT:
-                            # Try to truncate the text inside a dict part
+                        if running + part_len > limit:
                             if isinstance(part, dict) and "text" in part:
-                                remaining = TOOL_RESULT_LIMIT - running
+                                remaining = limit - running
                                 if remaining > 200:
                                     trunc_part = dict(part)
                                     trunc_part["text"] = part["text"][:remaining] + TRUNCATION_NOTICE.format(
-                                        original=total, limit=TOOL_RESULT_LIMIT,
+                                        original=total, limit=limit,
                                     )
                                     truncated.append(trunc_part)
                             break
                         truncated.append(part)
                         running += part_len
                     if not truncated:
-                        return str(content)[:TOOL_RESULT_LIMIT] + TRUNCATION_NOTICE.format(
-                            original=total, limit=TOOL_RESULT_LIMIT,
+                        return str(content)[:limit] + TRUNCATION_NOTICE.format(
+                            original=total, limit=limit,
                         )
                     return truncated
             return content
@@ -932,6 +1081,21 @@ async def build_graph(
         + [schedule_task, send_file]
     )
 
+    # --- Model healthcheck at startup -----------------------------------------
+    # Validate configured model IDs before starting the graph to catch
+    # typos and invalid identifiers early (instead of at first invocation).
+    from octo.models import resolve_model_name, _detect_provider
+    _model_issues = []
+    for tier_label, tier_val in [("supervisor/default", "default"), ("high", "high"), ("low", "low")]:
+        name = resolve_model_name(tier=tier_val)
+        provider = _detect_provider(name)
+        if provider == "bedrock" and not any(c in name for c in ".:"):
+            _model_issues.append(f"  {tier_label}: '{name}' — missing region prefix or version suffix for Bedrock")
+        elif not name:
+            _model_issues.append(f"  {tier_label}: (empty) — no model configured")
+    if _model_issues:
+        logger.warning("Model healthcheck warnings:\n%s", "\n".join(_model_issues))
+
     # --- Custom handoff tools with message truncation -------------------------
     # The default create_handoff_tool passes the ENTIRE supervisor state to
     # workers.  Over a long session the state accumulates hundreds of thousands
@@ -951,8 +1115,8 @@ async def build_graph(
         handle_tool_errors=True,
     )
 
-    from octo.models import resolve_model_name
-    hook = _build_pre_model_hook(resolve_model_name())
+    total_tools = len(supervisor_tool_list) + len(handoff_tools)
+    hook = _build_pre_model_hook(resolve_model_name(), tool_count=total_tools)
 
     workflow = create_supervisor(
         agents=all_workers,

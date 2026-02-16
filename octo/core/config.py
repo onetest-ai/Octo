@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from octo.core.storage.base import StorageBackend
 
-VALID_PROVIDERS = {"anthropic", "openai", "bedrock", "azure", "github"}
+VALID_PROVIDERS = {"anthropic", "openai", "bedrock", "azure", "github", "gemini", "local"}
 VALID_CHECKPOINT_BACKENDS = {"sqlite", "postgres"}
 VALID_MODEL_PROFILES = {"quality", "balanced", "budget"}
 
@@ -37,7 +37,7 @@ class OctoConfig:
     """
 
     # --- LLM ---
-    llm_provider: str = ""                       # "anthropic" | "openai" | "bedrock" | "azure" | "github"
+    llm_provider: str = ""                       # "anthropic" | "openai" | "bedrock" | "azure" | "github" | "gemini" | "local"
     llm_credentials: dict[str, str] = field(default_factory=dict)
     # {"api_key": "...", "endpoint": "...", "region": "...", etc.}
 
@@ -103,7 +103,7 @@ class OctoConfig:
             errors.append("llm_credentials is required (e.g. {'api_key': '...'})")
         else:
             # Provider-specific credential checks
-            if self.llm_provider in ("anthropic", "openai", "github"):
+            if self.llm_provider in ("anthropic", "openai", "github", "gemini"):
                 if "api_key" not in self.llm_credentials:
                     errors.append(f"{self.llm_provider} requires 'api_key' in llm_credentials")
             elif self.llm_provider == "azure":

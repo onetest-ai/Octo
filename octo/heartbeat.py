@@ -381,9 +381,12 @@ class HeartbeatRunner:
             if self._callbacks:
                 config["callbacks"] = self._callbacks
 
-            result = await self._app.ainvoke(
+            from octo.retry import invoke_with_retry
+
+            result = await invoke_with_retry(
+                self._app,
                 {"messages": [HumanMessage(content=prompt)]},
-                config=config,
+                config,
             )
 
             response_text = ""
@@ -477,9 +480,12 @@ class CronScheduler:
             if self._callbacks:
                 config["callbacks"] = self._callbacks
 
-            result = await self._app.ainvoke(
+            from octo.retry import invoke_with_retry
+
+            result = await invoke_with_retry(
+                self._app,
                 {"messages": [HumanMessage(content=prompt)]},
-                config=config,
+                config,
             )
 
             response_text = ""

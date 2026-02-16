@@ -16,35 +16,7 @@ from rich.text import Text
 
 console = Console()
 
-# ── Default models per provider ─────────────────────────────────────────
-
-_DEFAULT_MODELS: dict[str, dict[str, str]] = {
-    "anthropic": {
-        "DEFAULT_MODEL": "claude-sonnet-4-5-20250929",
-        "HIGH_TIER_MODEL": "claude-sonnet-4-5-20250929",
-        "LOW_TIER_MODEL": "claude-haiku-4-5-20251001",
-    },
-    "bedrock": {
-        "DEFAULT_MODEL": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "HIGH_TIER_MODEL": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "LOW_TIER_MODEL": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-    },
-    "openai": {
-        "DEFAULT_MODEL": "gpt-4o",
-        "HIGH_TIER_MODEL": "gpt-4o",
-        "LOW_TIER_MODEL": "gpt-4o-mini",
-    },
-    "azure": {
-        "DEFAULT_MODEL": "gpt-4o",
-        "HIGH_TIER_MODEL": "gpt-4o",
-        "LOW_TIER_MODEL": "gpt-4o-mini",
-    },
-    "github": {
-        "DEFAULT_MODEL": "github/openai/gpt-4.1",
-        "HIGH_TIER_MODEL": "github/openai/gpt-4.1",
-        "LOW_TIER_MODEL": "github/openai/gpt-4o-mini",
-    },
-}
+# ── Default models per provider — sourced from models._REGISTRY ────────
 
 _PROVIDERS = [
     ("1", "anthropic", "Anthropic (Claude)", "Direct API — requires ANTHROPIC_API_KEY"),
@@ -52,6 +24,8 @@ _PROVIDERS = [
     ("3", "openai", "OpenAI", "GPT-4o, o1, o3 — requires OPENAI_API_KEY"),
     ("4", "azure", "Azure OpenAI", "Azure-hosted models — requires endpoint + key"),
     ("5", "github", "GitHub Models", "GPT, Claude, Mistral, Llama via GitHub PAT"),
+    ("6", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
+    ("7", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
 ]
 
 _MCP_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -196,7 +170,7 @@ def _select_provider(preselected: str | None) -> str:
         table.add_row(num, name, desc)
     console.print(table)
 
-    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4", "5"], default="1")
+    choice = Prompt.ask("  Provider", choices=["1", "2", "3", "4", "5", "6", "7"], default="1")
     return {p[0]: p[1] for p in _PROVIDERS}[choice]
 
 
@@ -261,13 +235,42 @@ def _collect_credentials(provider: str) -> dict[str, str]:
             console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
             creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Personal Access Token", password=True)
 
+    elif provider == "gemini":
+        existing = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+        if existing:
+            console.print("  [dim]Using GOOGLE_API_KEY from environment[/dim]")
+            creds["GOOGLE_API_KEY"] = existing
+        else:
+            console.print("  [dim]Get an API key at aistudio.google.com/apikey[/dim]")
+            creds["GOOGLE_API_KEY"] = Prompt.ask("  Google API key", password=True)
+
+    elif provider == "local":
+        creds["OPENAI_API_BASE"] = Prompt.ask(
+            "  API base URL",
+            default=os.environ.get("OPENAI_API_BASE", "http://localhost:8000/v1"),
+        )
+        api_key = Prompt.ask("  API key (optional, press Enter to skip)", default="", password=True)
+        if api_key:
+            creds["OPENAI_API_KEY"] = api_key
+
     return creds
 
 
 def _collect_model_config(provider: str, track: str) -> dict[str, str]:
-    defaults = _DEFAULT_MODELS[provider]
+    from octo.models import _REGISTRY
+
+    spec = _REGISTRY.get(provider)
+    defaults = {
+        "DEFAULT_MODEL": spec.default if spec else "",
+        "HIGH_TIER_MODEL": spec.high if spec else "",
+        "LOW_TIER_MODEL": spec.low if spec else "",
+    }
 
     if track == "quick":
+        if not defaults["DEFAULT_MODEL"]:
+            # Local provider: no defaults — must ask for model name
+            model = Prompt.ask("  Model name (e.g. llama3, mistral)")
+            return {"DEFAULT_MODEL": model, "HIGH_TIER_MODEL": model, "LOW_TIER_MODEL": model}
         console.print(f"  [dim]Using default models for {provider}[/dim]")
         return dict(defaults)
 
@@ -283,7 +286,7 @@ def _collect_model_config(provider: str, track: str) -> dict[str, str]:
         "LOW_TIER_MODEL": "Low-tier model (summarization, errors)",
     }
     for var, default in defaults.items():
-        models[var] = Prompt.ask(f"  {labels.get(var, var)}", default=default)
+        models[var] = Prompt.ask(f"  {labels.get(var, var)}", default=default or "")
 
     return models
 
@@ -391,7 +394,7 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
     sections: list[tuple[str, str, list[str]]] = [
         (
             "LLM Provider",
-            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github",
+            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github, gemini, local",
             ["LLM_PROVIDER"],
         ),
         ("Anthropic", "Direct Anthropic API access", ["ANTHROPIC_API_KEY"]),
@@ -407,9 +410,15 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             "GPT, Claude, Mistral, Llama via GitHub PAT (models:read scope)",
             ["GITHUB_TOKEN", "GITHUB_MODELS_BASE_URL", "GITHUB_MODELS_ANTHROPIC_BASE_URL"],
         ),
+        ("Google Gemini", "Gemini 2.5 Flash/Pro", ["GOOGLE_API_KEY"]),
+        (
+            "Local / Custom",
+            "OpenAI-compatible endpoint (vLLM, Ollama, llama.cpp)",
+            ["OPENAI_API_BASE"],
+        ),
         (
             "Model Tiers",
-            "HIGH = complex reasoning, DEFAULT = general, LOW = summarization/errors",
+            "HIGH = complex reasoning, DEFAULT = general, LOW = summarization/errors\n# Use provider/ prefix for mixed providers: anthropic/claude-*, gemini/gemini-*, local/llama3",
             ["DEFAULT_MODEL", "HIGH_TIER_MODEL", "LOW_TIER_MODEL"],
         ),
         ("Model Profile", "Named profiles: quality, balanced, budget", ["MODEL_PROFILE"]),

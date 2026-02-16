@@ -143,8 +143,14 @@ GITHUB_MODELS_ANTHROPIC_BASE_URL = os.getenv(
     "GITHUB_MODELS_ANTHROPIC_BASE_URL", "https://models.inference.ai.azure.com"
 )
 
+# --- Google Gemini ---
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+
+# --- Local / Custom (OpenAI-compatible endpoint) ---
+OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "")
+
 # --- Provider override (optional) ---
-# Auto-detected from model name if not set. Values: anthropic, bedrock, openai, azure, github
+# Auto-detected from model name if not set. Values: anthropic, bedrock, openai, azure, github, gemini, local
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")
 
 # --- Model tiers ---
@@ -185,10 +191,18 @@ SUMMARIZATION_TRIGGER_TOKENS = int(os.getenv("SUMMARIZATION_TRIGGER_TOKENS", "40
 SUMMARIZATION_KEEP_TOKENS = int(os.getenv("SUMMARIZATION_KEEP_TOKENS", "8000"))
 # Supervisor pre-model hook — max chars per message before truncation (safety net)
 SUPERVISOR_MSG_CHAR_LIMIT = int(os.getenv("SUPERVISOR_MSG_CHAR_LIMIT", "30000"))
+# System prompt budget — max total chars for the base system prompt.
+# Sections are prioritized: identity > long-term memory > state > daily memory.
+SYSTEM_PROMPT_BUDGET = int(os.getenv("SYSTEM_PROMPT_BUDGET", "30000"))
 
 # Claude Code tool — default subprocess timeout in seconds.
 # Claude Code tasks can run for up to an hour; 2400s (40min) is a safe default.
 CLAUDE_CODE_TIMEOUT = int(os.getenv("CLAUDE_CODE_TIMEOUT", "2400"))
+
+# Telegram-specific history limit — max messages in checkpoint before auto-trim.
+# Telegram sessions are long-lived; this prevents unbounded state growth.
+# Set to 0 to disable (rely on auto_compact threshold instead).
+TELEGRAM_HISTORY_LIMIT = int(os.getenv("TELEGRAM_HISTORY_LIMIT", "50"))
 
 # --- Model Profiles ---
 # BUILTIN_PROFILES imported from octo.core.constants

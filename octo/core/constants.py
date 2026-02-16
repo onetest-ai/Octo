@@ -45,6 +45,7 @@ DEFAULT_SUMMARIZATION_TRIGGER_TOKENS = 40_000
 DEFAULT_SUMMARIZATION_KEEP_TOKENS = 8_000
 DEFAULT_SUPERVISOR_MSG_CHAR_LIMIT = 30_000
 DEFAULT_CLAUDE_CODE_TIMEOUT = 2400  # seconds
+DEFAULT_SYSTEM_PROMPT_BUDGET = 30_000  # max total chars for base system prompt
 
 
 # ---------------------------------------------------------------------------
