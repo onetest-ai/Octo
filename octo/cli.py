@@ -1736,6 +1736,14 @@ async def _chat_loop(
                 vp_poller.stop()
             if tg:
                 await tg.stop()
+            # Flush Langfuse before exit to prevent hanging threads
+            if LANGFUSE_ENABLED:
+                try:
+                    from langfuse import Langfuse
+                    Langfuse().flush()
+                    Langfuse().shutdown()
+                except Exception:
+                    pass
             ui.print_info("Goodbye!")
 
     finally:
