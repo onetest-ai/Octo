@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage
 from telegram import Update
@@ -228,8 +228,9 @@ class TelegramTransport:
         self.graph_lock = graph_lock     # shared lock to prevent races with heartbeat/cron
         self.on_command = on_command     # async (cmd, args) -> str | None for slash commands
         self._app: Application | None = None
-        # VP notification tracking: telegram_msg_id → {teams_chat_id, teams_message_id}
-        self._vp_notifications: dict[int, dict[str, str]] = {}
+        # Generic reply router: telegram_msg_id → async handler(update, text)
+        # Used by VP notifications, background tasks, and any future reply-routed feature.
+        self._reply_handlers: dict[int, Callable[[Update, str], Awaitable[None]]] = {}
 
     async def _send_typing(self, chat_id: int, stop_event: asyncio.Event) -> None:
         """Keep sending 'typing' action until stop_event is set."""
@@ -490,10 +491,11 @@ class TelegramTransport:
         sender = self._sender_name(update)
         logger.info("Telegram message from %s: %s", sender, user_text[:100])
 
-        # --- VP reply routing: reply to a VP notification → send to Teams ---
+        # --- Reply routing: reply to a tracked message → dispatch to handler ---
         reply_to = update.message.reply_to_message
-        if reply_to and reply_to.message_id in self._vp_notifications:
-            await self._handle_vp_reply(update, user_text)
+        if reply_to and reply_to.message_id in self._reply_handlers:
+            handler = self._reply_handlers.pop(reply_to.message_id)
+            await handler(update, user_text)
             return
 
         # --- Slash command routing → CLI command handler ---
@@ -543,7 +545,10 @@ class TelegramTransport:
                 logger.exception("Error handling Telegram message")
                 await update.message.reply_text("Something went wrong. Check the console.")
 
-    async def _handle_vp_reply(self, update: Update, text: str) -> None:
+    async def _handle_vp_reply(
+        self, update: Update, text: str,
+        teams_chat_id: str = "", teams_message_id: str = "",
+    ) -> None:
         """Handle a reply to a VP escalation notification.
 
         The reply is an instruction TO Octo, not the literal text to send.
@@ -554,9 +559,6 @@ class TelegramTransport:
         - Any other text → Octo processes as instruction → persona formats → sends to Teams.
         """
         reply_to = update.message.reply_to_message
-        info = self._vp_notifications.get(reply_to.message_id, {})
-        teams_chat_id = info.get("teams_chat_id", "")
-        teams_message_id = info.get("teams_message_id", "")
 
         if not teams_chat_id:
             await update.message.reply_text("Could not resolve Teams chat.")
@@ -863,19 +865,21 @@ class TelegramTransport:
                 except Exception:
                     logger.exception("Failed to send proactive message to Telegram")
 
-    async def send_vp_notification(
-        self, text: str, teams_chat_id: str, teams_message_id: str,
+    async def send_tracked_message(
+        self,
+        text: str,
+        on_reply: Callable[[Update, str], Awaitable[None]],
     ) -> None:
-        """Send a VP escalation/monitor notification and track it for reply routing.
+        """Send a message to the owner and register a reply handler.
 
-        When the user replies to this Telegram message, the reply text will be
-        forwarded to the Teams chat automatically.
+        When the user replies to this Telegram message, ``on_reply(update, text)``
+        is called.  This is the generic mechanism used by VP notifications,
+        background tasks, and any future reply-routed feature.
         """
         if not self._app or not TELEGRAM_OWNER_ID:
             return
 
         chat_id = int(TELEGRAM_OWNER_ID)
-
         sent_msg = None
         for chunk in _split_message(text):
             html_chunk = _markdown_to_telegram_html(chunk)
@@ -889,19 +893,58 @@ class TelegramTransport:
                         chat_id=chat_id, text=chunk,
                     )
                 except Exception:
-                    logger.exception("Failed to send VP notification to Telegram")
+                    logger.exception("Failed to send tracked message")
 
-        # Track the last chunk's message_id for reply routing
         if sent_msg:
-            self._vp_notifications[sent_msg.message_id] = {
-                "teams_chat_id": teams_chat_id,
-                "teams_message_id": teams_message_id,
-            }
+            self._reply_handlers[sent_msg.message_id] = on_reply
             # Cap map size to prevent unbounded growth
-            if len(self._vp_notifications) > 200:
-                oldest = list(self._vp_notifications)[:100]
+            if len(self._reply_handlers) > 200:
+                oldest = list(self._reply_handlers)[:100]
                 for k in oldest:
-                    del self._vp_notifications[k]
+                    del self._reply_handlers[k]
+
+    async def send_bg_notification(self, text: str, task_id: str) -> None:
+        """Send a background task notification, tracked for reply routing.
+
+        Reply routing behavior depends on task status:
+        - **paused**: resumes the task with the reply as the answer
+        - **completed/failed**: spawns a follow-up task with original context
+        """
+
+        async def _on_reply(update: Update, reply_text: str) -> None:
+            from octo.background import get_worker_pool
+            pool = get_worker_pool()
+            if not pool:
+                await update.message.reply_text("Background worker pool not initialized.")
+                return
+
+            # Try resume first (for paused tasks)
+            ok = await pool.resume_task(task_id, reply_text)
+            if ok:
+                await update.message.reply_text(f"Task {task_id} resumed with your answer.")
+                return
+
+            # Not paused — spawn a follow-up task with original context
+            new_task = await pool.follow_up(task_id, reply_text)
+            if new_task:
+                await update.message.reply_text(
+                    f"Follow-up task {new_task.id} dispatched "
+                    f"(based on {task_id} results)."
+                )
+            else:
+                await update.message.reply_text(f"Task {task_id} not found.")
+
+        await self.send_tracked_message(text, on_reply=_on_reply)
+
+    async def send_vp_notification(
+        self, text: str, teams_chat_id: str, teams_message_id: str,
+    ) -> None:
+        """Send a VP notification, tracked for reply routing to Teams."""
+
+        async def _on_reply(update: Update, reply_text: str) -> None:
+            await self._handle_vp_reply(update, reply_text, teams_chat_id, teams_message_id)
+
+        await self.send_tracked_message(text, on_reply=_on_reply)
 
     async def send_document(self, file_path: str, caption: str = "", chat_id: int | None = None) -> bool:
         """Send a file as a Telegram document.

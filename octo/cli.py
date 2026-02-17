@@ -216,6 +216,7 @@ async def _chat_loop(
                             "/projects update", "/projects remove", "/projects reload",
                             "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
+                            "/bg", "/tasks", "/task",
                             "/create-agent", "/create-skill", "/reload", "/restart",
                             "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
@@ -312,6 +313,33 @@ async def _chat_loop(
         )
         cron_scheduler.start()
 
+        # --- Background worker pool ---
+        from octo.background import BackgroundWorkerPool, TaskStore, set_worker_pool
+        from octo.config import BG_MAX_CONCURRENT, OCTO_DIR
+
+        _bg_task_store = TaskStore(OCTO_DIR / "tasks")
+
+        async def _deliver_bg(task_id: str, status: str, text: str) -> None:
+            if status == "completed":
+                msg = f"**Completed:**\n\n{text}"
+            elif status == "paused":
+                msg = text  # already formatted with question
+            else:
+                msg = f"**Failed:**\n\n{text}"
+            # CLI: always show
+            ui.print_response(msg, source=f"Octi (Task {task_id})")
+            # Telegram: use tracked notification so user can reply-to resume
+            if tg:
+                source_msg = f"**[Task {task_id}]**\n\n{msg}"
+                await tg.send_bg_notification(source_msg, task_id)
+
+        _worker_pool = BackgroundWorkerPool(
+            store=_bg_task_store,
+            on_complete=_deliver_bg,
+            max_concurrent=BG_MAX_CONCURRENT,
+        )
+        set_worker_pool(_worker_pool)
+
         hb_interval_display = HEARTBEAT_INTERVAL_SECONDS // 60
         ui.print_status(
             f"Heartbeat active (every {hb_interval_display}m, "
@@ -362,10 +390,20 @@ async def _chat_loop(
 
         async def _rebuild_graph():
             nonlocal app, agent_configs, skills, mcp_tools, mcp_tools_by_server
-            # Shield from CancelledError: closing STDIO sessions tears down anyio
-            # cancel scopes that can propagate cancellation to the running task.
-            await asyncio.shield(session_pool.close_all())
-            await asyncio.sleep(0.05)  # let cancel scopes settle
+            # Stop background workers BEFORE closing MCP sessions — workers may
+            # be mid-execution using MCP tools; tearing down sessions first causes
+            # anyio cancel scope propagation that crashes the event loop.
+            await _worker_pool.shutdown()
+            # Close MCP sessions. anyio cancel scopes can propagate CancelledError
+            # even through asyncio.shield, so catch and swallow it.
+            try:
+                await asyncio.shield(session_pool.close_all())
+            except BaseException as exc:
+                logger.debug("MCP session close interrupted: %s", exc)
+            try:
+                await asyncio.sleep(0.05)  # let cancel scopes settle
+            except asyncio.CancelledError:
+                pass  # anyio scope propagation — safe to ignore
             mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
             app, agent_configs, skills = await build_graph(mcp_tools, mcp_tools_by_server)
             # Update proactive runners with new graph
@@ -666,6 +704,7 @@ async def _chat_loop(
                 import os as _os
                 await heartbeat.stop()
                 await cron_scheduler.stop()
+                await _worker_pool.shutdown()
                 if vp_poller is not None:
                     vp_poller.stop()
                 if tg:
@@ -1524,15 +1563,138 @@ async def _chat_loop(
                         ui.print_error("Usage: /cron [list|add|remove|pause|resume]")
                     continue
 
+                # ── Background tasks ───────────────────────────────
+                if user_input.startswith("/bg "):
+                    bg_cmd = user_input[4:].strip()
+                    if not bg_cmd:
+                        ui.print_error("Usage: /bg <command>")
+                        continue
+                    import uuid as _uuid
+                    from datetime import datetime as _dt, timezone as _tz
+                    from octo.background import BackgroundTask
+                    _bg_task = BackgroundTask(
+                        id=_uuid.uuid4().hex[:8],
+                        type="process",
+                        status="pending",
+                        created_at=_dt.now(_tz.utc).isoformat(),
+                        command=bg_cmd,
+                    )
+                    await _worker_pool.dispatch(_bg_task)
+                    ui.print_info(f"Background task dispatched: {_bg_task.id}")
+                    continue
+
+                if user_input == "/tasks":
+                    _all_tasks = _worker_pool.list_tasks()
+                    if not _all_tasks:
+                        ui.print_info("No background tasks.")
+                    else:
+                        from rich.table import Table as RichTable
+                        _tbl = RichTable(
+                            title="Background Tasks",
+                            show_header=True,
+                            header_style="bold cyan",
+                            border_style="dim",
+                        )
+                        _tbl.add_column("ID", style="cyan", width=10)
+                        _tbl.add_column("Type", style="yellow", width=8)
+                        _tbl.add_column("Status", width=12)
+                        _tbl.add_column("Detail", style="dim", max_width=50)
+                        _tbl.add_column("Created", style="dim", width=20)
+                        _status_colors = {
+                            "completed": "green",
+                            "running": "yellow",
+                            "failed": "red",
+                            "paused": "magenta",
+                            "pending": "dim",
+                            "cancelled": "dim red",
+                        }
+                        for _t in _all_tasks[:20]:
+                            _sc = _status_colors.get(_t.status, "white")
+                            _detail = _t.command[:50] if _t.type == "process" else (_t.prompt[:50] if _t.prompt else "")
+                            _tbl.add_row(
+                                _t.id,
+                                _t.type,
+                                f"[{_sc}]{_t.status}[/{_sc}]",
+                                _detail,
+                                _t.created_at[:19].replace("T", " "),
+                            )
+                        from octo.ui import console as _ui_console
+                        _ui_console.print(_tbl)
+                    continue
+
+                if user_input.startswith("/task "):
+                    _parts = user_input.split(maxsplit=2)
+                    if len(_parts) < 2:
+                        ui.print_error("Usage: /task <id> [cancel|resume <answer>]")
+                        continue
+                    _tid = _parts[1]
+                    _action = _parts[2] if len(_parts) > 2 else ""
+
+                    if _action == "cancel":
+                        if await _worker_pool.cancel_task(_tid):
+                            ui.print_info(f"Task {_tid} cancelled.")
+                        else:
+                            ui.print_error(f"Task {_tid}: not found or not cancellable.")
+                    elif _action.startswith("resume "):
+                        _answer = _action[7:].strip()
+                        if not _answer:
+                            ui.print_error("Usage: /task <id> resume <your answer>")
+                        elif await _worker_pool.resume_task(_tid, _answer):
+                            ui.print_info(f"Task {_tid} resumed.")
+                        else:
+                            ui.print_error(f"Task {_tid}: not found or not paused.")
+                    elif _action.startswith("followup "):
+                        _instr = _action[9:].strip()
+                        if not _instr:
+                            ui.print_error("Usage: /task <id> followup <instruction>")
+                        else:
+                            _new = await _worker_pool.follow_up(_tid, _instr)
+                            if _new:
+                                ui.print_info(f"Follow-up task {_new.id} dispatched (based on {_tid}).")
+                            else:
+                                ui.print_error(f"Task {_tid} not found.")
+                    else:
+                        _tsk = _worker_pool.get_task(_tid)
+                        if not _tsk:
+                            ui.print_error(f"Task {_tid} not found.")
+                        else:
+                            _lines = [
+                                f"**ID**: {_tsk.id}",
+                                f"**Type**: {_tsk.type}",
+                                f"**Status**: {_tsk.status}",
+                                f"**Created**: {_tsk.created_at[:19]}",
+                            ]
+                            if _tsk.started_at:
+                                _lines.append(f"**Started**: {_tsk.started_at[:19]}")
+                            if _tsk.completed_at:
+                                _lines.append(f"**Completed**: {_tsk.completed_at[:19]}")
+                            if _tsk.type == "process":
+                                _lines.append(f"**Command**: `{_tsk.command}`")
+                            else:
+                                _lines.append(f"**Prompt**: {_tsk.prompt}")
+                            if _tsk.paused_question:
+                                _lines.append(f"\n**Pending question**: {_tsk.paused_question}")
+                            if _tsk.result:
+                                _r = _tsk.result[:1000] + ("..." if len(_tsk.result) > 1000 else "")
+                                _lines.append(f"\n**Result**:\n{_r}")
+                            if _tsk.error:
+                                _lines.append(f"\n**Error**: {_tsk.error}")
+                            ui.print_info("\n".join(_lines))
+                    continue
+
                 if user_input.startswith("/vp"):
                     from octo.virtual_persona.commands import handle_vp_command
                     vp_args = user_input[3:].strip()
-                    await handle_vp_command(
+                    new_poller = await handle_vp_command(
                         vp_args,
-                        vp_poller=locals().get("vp_poller"),
+                        vp_poller=vp_poller,
                         octo_app=app,
                         octo_config=config,
+                        graph_lock=graph_lock,
+                        telegram=tg,
                     )
+                    if new_poller is not None:
+                        vp_poller = new_poller
                     continue
 
                 if user_input == "/create-agent":
@@ -1574,6 +1736,7 @@ async def _chat_loop(
                     ui.print_info(f"Restarting Octo (thread {thread_id})...")
                     await heartbeat.stop()
                     await cron_scheduler.stop()
+                    await _worker_pool.shutdown()
                     if vp_poller is not None:
                         vp_poller.stop()
                     if tg:
@@ -1732,6 +1895,7 @@ async def _chat_loop(
         finally:
             await heartbeat.stop()
             await cron_scheduler.stop()
+            await _worker_pool.shutdown()
             if vp_poller is not None:
                 vp_poller.stop()
             if tg:

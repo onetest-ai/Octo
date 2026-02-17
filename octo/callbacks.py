@@ -123,8 +123,9 @@ class OctiCallbackHandler(BaseCallbackHandler):
             # Truncate
             if len(output_str) > max_length:
                 output_str = output_str[:max_length] + f"\n... (truncated, {len(str(output))} chars total)"
-            # Markdown
-            if any(m in output_str for m in ["```", "**", "##", "- ", "* ", "\n\n"]):
+            # Markdown — only for content with actual markdown syntax
+            # (exclude "\n\n" — too aggressive, causes extra blank lines in panels)
+            if any(m in output_str for m in ["```", "**", "##"]):
                 return Markdown(output_str)
             return Text(output_str, style="white")
         except Exception:
@@ -450,9 +451,9 @@ class OctiCallbackHandler(BaseCallbackHandler):
         console.print()
         if user_message:
             content = Text()
-            content.append(f"❌ {user_message}\n\n", style="bold red")
+            content.append(f"❌ {user_message}\n", style="bold red")
             if hint:
-                content.append(f"💡 {hint}\n\n", style="yellow")
+                content.append(f"💡 {hint}\n", style="yellow")
             content.append("Technical details:\n", style="dim")
             content.append(error_str[:300] + ("..." if len(error_str) > 300 else ""), style="dim")
             console.print(Panel(

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-from octo.config import PROJECTS, CLAUDE_CODE_TIMEOUT, get_project_for_agent
+from octo.config import PROJECTS, CLAUDE_CODE_TIMEOUT, ADDITIONAL_CLAUDE_ARGS, get_project_for_agent
 
 
 def _resolve_project(agent_name: str = "", working_directory: str = ""):
@@ -85,6 +85,9 @@ async def claude_code(
 
     # Build command
     cmd = ["claude", "-p", "--output-format", "json"]
+    if ADDITIONAL_CLAUDE_ARGS:
+        import shlex
+        cmd[1:1] = shlex.split(ADDITIONAL_CLAUDE_ARGS)
     if agent:
         cmd.extend(["--agent", agent])
     cmd.append(prompt)

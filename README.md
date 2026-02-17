@@ -110,6 +110,13 @@ Inspired by OpenClaw's heartbeat mechanism. Octo can reach out first — no user
 
 Jobs stored in `.octo/cron.json`. Agents can self-schedule via the `schedule_task` tool.
 
+**Background workers** — dispatch long-running tasks that run independently while you keep chatting:
+- **Process mode**: fire-and-forget subprocess (`claude -p`, shell commands) — done when process exits
+- **Agent mode**: standalone LangGraph agent with `task_complete`/`escalate_question` tools
+- Tasks persist as JSON in `.octo/tasks/`. Semaphore-capped concurrency (`BG_MAX_CONCURRENT`).
+- Results delivered via proactive notification (CLI + Telegram). In Telegram, swipe-reply to a task notification to resume a paused task.
+- Supervisor can auto-dispatch via `dispatch_background` tool, or use `/bg <command>` manually.
+
 ### Telegram Transport
 
 Full bidirectional Telegram bot that shares the same conversation thread as the CLI. Features:
@@ -118,6 +125,7 @@ Full bidirectional Telegram bot that shares the same conversation thread as the 
 - User authorization (`/authorize`, `/revoke`)
 - Proactive message delivery (heartbeat + cron results)
 - File attachments — `send_file` tool sends research reports as Telegram documents
+- Reply routing — swipe-reply to VP or background task notifications to respond in-context
 - Shared `asyncio.Lock` prevents races between CLI, Telegram, heartbeat, and cron
 
 ### Context Window Management
@@ -378,6 +386,13 @@ VP_POLL_INTERVAL=2m           # supports: 30s, 2m, 1h, or bare 120 (seconds)
 VP_ACTIVE_HOURS_START=08:00
 VP_ACTIVE_HOURS_END=22:00
 
+# Claude Code — extra args injected into all `claude -p` calls
+ADDITIONAL_CLAUDE_ARGS=--dangerously-skip-permissions
+CLAUDE_CODE_TIMEOUT=2400       # subprocess timeout in seconds (default 2400)
+
+# Background workers
+BG_MAX_CONCURRENT=3            # max parallel background tasks (default 3)
+
 # Voice (ElevenLabs TTS)
 ELEVENLABS_API_KEY=...
 ```
@@ -419,6 +434,9 @@ GitHub Models auto-routes to the right LangChain class based on the model name:
 | `/profile [name]` | Show/switch model profile |
 | `/heartbeat [test]` | Heartbeat status or force a tick |
 | `/cron [cmd]` | Scheduled tasks (list/add/remove/pause/resume) |
+| `/bg <command>` | Run command in background |
+| `/tasks` | List background tasks |
+| `/task <id> [cmd]` | Task details / cancel / resume |
 | `/vp [cmd]` | Virtual Persona (status/allow/block/ignore/release/sync/persona/stats) |
 | `/create-agent` | AI-assisted agent creation wizard |
 | `/voice on\|off` | Toggle TTS |

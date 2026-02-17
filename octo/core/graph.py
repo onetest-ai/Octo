@@ -22,7 +22,7 @@ from octo.loaders.agent_loader import AgentConfig, load_agents, load_octo_agents
 from octo.loaders.skill_loader import check_missing_deps, load_skills, verify_skills_deps
 from octo.middleware import ToolErrorMiddleware, ToolResultLimitMiddleware, build_summarization_middleware
 from octo.models import make_model
-from octo.tools import BUILTIN_TOOLS
+from octo.tools import BUILTIN_TOOLS, AGENT_LIFECYCLE_TOOLS
 
 # --- Extracted tool modules (Phase 2 of package split) --------------------
 # Tools are now defined in octo.core.tools.* and imported here.
@@ -431,6 +431,22 @@ def _build_project_agents(project_agents: list[AgentConfig]) -> list:
     return workers
 
 
+_AGENT_LIFECYCLE_FOOTER = """
+
+---
+## Reporting results
+
+You have two lifecycle tools — use them, do NOT silently finish without reporting:
+
+- **`task_complete(summary)`** — call this when you are done. Your summary is the ONLY
+  thing the user will see. If you skip this, the user gets nothing.
+- **`escalate_question(question)`** — call this when you need user input before continuing.
+
+Never finish without calling one of these tools. Even if you only have partial results,
+call `task_complete` with what you found so far.
+"""
+
+
 def _build_worker_agents(
     agent_configs: list[AgentConfig],
     mcp_tools: list,
@@ -446,8 +462,10 @@ def _build_worker_agents(
     summarization_middleware = build_summarization_middleware()
     anthropic_cache, bedrock_cache = _caching_middleware()
 
-    # Index builtin tools by name for agent-specific filtering
+    # Index builtin + lifecycle tools by name for agent-specific filtering
     builtin_by_name = {t.name: t for t in BUILTIN_TOOLS}
+    lifecycle_by_name = {t.name: t for t in AGENT_LIFECYCLE_TOOLS}
+    all_named = {**builtin_by_name, **lifecycle_by_name}
 
     workers = []
     for cfg in agent_configs:
@@ -460,18 +478,41 @@ def _build_worker_agents(
         result_limit_mw = ToolResultLimitMiddleware(max_chars=worker_limit)
 
         if cfg.tools:
-            # Agent specifies tool names — resolve from both MCP and builtin
-            agent_tools = [t for t in mcp_tools if t.name in cfg.tools]
-            agent_tools += [builtin_by_name[n] for n in cfg.tools if n in builtin_by_name]
+            # Agent specifies tool names — resolve from builtin, lifecycle, and MCP
+            mcp_by_name = {t.name: t for t in mcp_tools}
+            agent_tools = []
+            unresolved = []
+            for name in cfg.tools:
+                if name in all_named:
+                    agent_tools.append(all_named[name])
+                elif name in mcp_by_name:
+                    agent_tools.append(mcp_by_name[name])
+                else:
+                    unresolved.append(name)
+            if unresolved:
+                logger.warning(
+                    "Agent '%s': could not resolve tools: %s "
+                    "(not in builtins, lifecycle, or MCP)",
+                    cfg.name, ", ".join(unresolved),
+                )
         else:
-            # No filter — give builtins + MCP proxy (deferred)
-            agent_tools = list(BUILTIN_TOOLS) + [find_tools, call_mcp_tool]
+            # No filter — give builtins + lifecycle + MCP proxy (deferred)
+            agent_tools = list(BUILTIN_TOOLS) + list(AGENT_LIFECYCLE_TOOLS) + [find_tools, call_mcp_tool]
+
+        # Always ensure lifecycle tools are present even if not explicitly listed
+        existing_names = {t.name for t in agent_tools}
+        for lt in AGENT_LIFECYCLE_TOOLS:
+            if lt.name not in existing_names:
+                agent_tools.append(lt)
+
+        # Append lifecycle instructions so the agent always reports results
+        system_prompt = cfg.system_prompt + _AGENT_LIFECYCLE_FOOTER
 
         agent = create_agent(
             model=model,
             tools=agent_tools,
             name=cfg.name,
-            system_prompt=cfg.system_prompt,
+            system_prompt=system_prompt,
             middleware=[error_middleware, result_limit_mw, summarization_middleware, anthropic_cache, bedrock_cache],
         )
         workers.append(agent)
@@ -671,6 +712,21 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
         "- `cron`: Cron expression. Spec examples: '0 9 * * MON-FRI'\n\n"
         "Set `isolated=True` for tasks that don't need conversation context.\n"
         "Results are delivered to the user via Telegram and CLI."
+    )
+
+    parts.append(
+        "## Background Tasks\n\n"
+        "For long-running tasks (>2 minutes), use `dispatch_background` to run them "
+        "independently. The user can continue chatting while the task runs.\n\n"
+        "Two modes:\n"
+        "- **process**: Subprocess (e.g., `claude -p 'analyze the codebase'`, shell commands). "
+        "Done when the process exits.\n"
+        "- **agent**: Standalone LangGraph agent with tools. Can call `task_complete` when done "
+        "or `escalate_question` to ask the user something.\n\n"
+        "The user is notified automatically when a task completes. They can check status "
+        "with `/tasks` and view details with `/task <id>`.\n\n"
+        "Use background tasks when the user asks for large analysis, code generation, "
+        "research, or anything that would take several minutes."
     )
 
     # Project workers
@@ -998,6 +1054,10 @@ async def build_graph(
     from octo.heartbeat import make_schedule_task_tool
     schedule_task = make_schedule_task_tool()
 
+    # Build dispatch_background tool (background workers)
+    from octo.background import make_dispatch_background_tool
+    dispatch_background = make_dispatch_background_tool()
+
     # Wrap supervisor tools in a TruncatingToolNode that:
     # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
     # 2. Truncates oversized results (e.g. search_code returning 73K chars)
@@ -1078,7 +1138,7 @@ async def build_graph(
         list(BUILTIN_TOOLS)
         + [find_tools, call_mcp_tool]
         + _plan_tools + [use_skill] + _mem_tools
-        + [schedule_task, send_file]
+        + [schedule_task, send_file, dispatch_background]
     )
 
     # --- Model healthcheck at startup -----------------------------------------

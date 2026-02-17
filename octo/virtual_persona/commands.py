@@ -14,8 +14,10 @@ async def handle_vp_command(
     vp_poller: Any = None,
     octo_app: Any = None,
     octo_config: dict[str, Any] | None = None,
+    graph_lock: Any = None,
+    telegram: Any = None,
     console: Any = None,
-) -> None:
+) -> Any:
     """Dispatch /vp subcommands.
 
     Args:
@@ -23,7 +25,12 @@ async def handle_vp_command(
         vp_poller: Optional VPPoller instance (for enable/disable).
         octo_app: Optional Octo supervisor graph (for persona generation).
         octo_config: Optional Octo config dict (for persona generation).
+        graph_lock: Optional asyncio.Lock for graph concurrency.
+        telegram: Optional TelegramTransport for VP escalation delivery.
         console: Rich console for output.
+
+    Returns:
+        A new VPPoller if one was created (e.g. by /vp enable), else None.
     """
     from octo.config import VP_DIR
     from octo import ui
@@ -62,7 +69,11 @@ async def handle_vp_command(
         ui.print_info(f"Available: {', '.join(sorted(handlers))}")
         return
 
-    await handler(rest, vp_dir=VP_DIR, vp_poller=vp_poller, octo_app=octo_app, octo_config=octo_config)
+    result = await handler(
+        rest, vp_dir=VP_DIR, vp_poller=vp_poller, octo_app=octo_app,
+        octo_config=octo_config, graph_lock=graph_lock, telegram=telegram,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -119,30 +130,72 @@ async def _cmd_status(rest: str, *, vp_dir: Path, vp_poller: Any, **_kw: Any) ->
         ui.print_info(f"Delegated threads: {len(delegated)}")
 
 
-async def _cmd_enable(rest: str, *, vp_dir: Path, vp_poller: Any, **_kw: Any) -> None:
+async def _cmd_enable(rest: str, *, vp_dir: Path, vp_poller: Any, **_kw: Any) -> Any:
     from octo import ui
 
+    import os
     _scaffold_data_files(vp_dir)
     ac = _get_ac(vp_dir)
     ac.set_enabled(True)
+    # Also set env var so /restart picks it up (config.py reads VP_ENABLED from env)
+    os.environ["VP_ENABLED"] = "true"
 
     if vp_poller is not None and hasattr(vp_poller, "start"):
         vp_poller.start()
         ui.print_status("VP enabled and poller started")
-    else:
+        return None
+
+    # No poller yet — create one on the fly
+    graph_lock = _kw.get("graph_lock")
+    octo_app = _kw.get("octo_app")
+    telegram = _kw.get("telegram")
+
+    if not graph_lock or not octo_app:
         ui.print_status("VP enabled (poller will start on next CLI restart)")
+        return None
+
+    from octo.config import (
+        VP_POLL_INTERVAL_SECONDS, VP_ACTIVE_START_TIME,
+        VP_ACTIVE_END_TIME, VP_SELF_EMAILS,
+    )
+    from octo.virtual_persona.graph import build_vp_graph
+    from octo.virtual_persona.poller import VPPoller, set_self_emails
+
+    if VP_SELF_EMAILS:
+        set_self_emails(VP_SELF_EMAILS)
+
+    vp_graph = build_vp_graph()
+
+    on_escalation = None
+    if telegram and hasattr(telegram, "send_vp_notification"):
+        on_escalation = telegram.send_vp_notification
+
+    poller = VPPoller(
+        vp_graph=vp_graph,
+        octo_app=octo_app,
+        graph_lock=graph_lock,
+        interval=VP_POLL_INTERVAL_SECONDS,
+        active_start=VP_ACTIVE_START_TIME,
+        active_end=VP_ACTIVE_END_TIME,
+        on_escalation=on_escalation,
+    )
+    poller.start()
+    ui.print_status("VP enabled and poller started")
+    return poller  # cli.py captures this to update vp_poller
 
 
 async def _cmd_disable(rest: str, *, vp_dir: Path, vp_poller: Any, **_kw: Any) -> None:
+    import os
     from octo import ui
 
     ac = _get_ac(vp_dir)
     ac.set_enabled(False)
+    os.environ["VP_ENABLED"] = "false"
 
     if vp_poller is not None and hasattr(vp_poller, "stop"):
         vp_poller.stop()
 
-    ui.print_status("VP disabled", "yellow")
+    ui.print_status("VP disabled and poller stopped", "yellow")
 
 
 async def _cmd_allow(rest: str, *, vp_dir: Path, vp_poller: Any, **_kw: Any) -> None:

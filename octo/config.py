@@ -199,6 +199,12 @@ SYSTEM_PROMPT_BUDGET = int(os.getenv("SYSTEM_PROMPT_BUDGET", "30000"))
 # Claude Code tasks can run for up to an hour; 2400s (40min) is a safe default.
 CLAUDE_CODE_TIMEOUT = int(os.getenv("CLAUDE_CODE_TIMEOUT", "2400"))
 
+# Additional args injected into all `claude -p` invocations (e.g., "--dangerously-skip-permissions").
+ADDITIONAL_CLAUDE_ARGS = os.getenv("ADDITIONAL_CLAUDE_ARGS", "")
+
+# Background workers — max concurrent tasks (semaphore cap).
+BG_MAX_CONCURRENT = int(os.getenv("BG_MAX_CONCURRENT", "3"))
+
 # Telegram-specific history limit — max messages in checkpoint before auto-trim.
 # Telegram sessions are long-lived; this prevents unbounded state growth.
 # Set to 0 to disable (rely on auto_compact threshold instead).
