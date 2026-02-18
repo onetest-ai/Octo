@@ -44,7 +44,7 @@ class BackgroundTask:
     max_turns: int = 50
 
     # Common
-    timeout: int = 3600
+    timeout: int = 0  # 0 = no timeout (fire-and-forget)
     created_at: str = ""
     started_at: str = ""
     completed_at: str = ""
@@ -305,9 +305,12 @@ class BackgroundWorkerPool:
                 cwd=cwd,
                 env=env,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=task.timeout
-            )
+            if task.timeout > 0:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=task.timeout
+                )
+            else:
+                stdout, stderr = await proc.communicate()
         except asyncio.TimeoutError:
             task.status = "failed"
             task.error = f"Timed out after {task.timeout}s"
@@ -562,7 +565,7 @@ def make_dispatch_background_tool():
         project: str = "",
         agent_name: str = "",
         cwd: str = "",
-        timeout: int = 3600,
+        timeout: int = 0,
         max_turns: int = 50,
     ) -> str:
         """Dispatch a long-running task to background execution.
@@ -581,7 +584,7 @@ def make_dispatch_background_tool():
                 and CLAUDE_CONFIG_DIR for that project. Use this instead of cwd.
             agent_name: Optional agent name — also resolves the project automatically
             cwd: Working directory (overridden by project if both given)
-            timeout: Max seconds before timeout (default 3600)
+            timeout: Max seconds before kill (0 = no timeout, runs until done). Default 0.
             max_turns: Max agent conversation turns (default 50, agent mode only)
         """
         pool = get_worker_pool()
