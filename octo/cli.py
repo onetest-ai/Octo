@@ -1112,11 +1112,14 @@ async def _chat_loop(
 
                     elif sub == "create":
                         # Interactive create wizard
-                        from prompt_toolkit import prompt as pt_prompt
+                        from prompt_toolkit import PromptSession as _WizPS
                         from octo.config import _validate_project_name
+                        _wiz = _WizPS()
+                        async def _ask(msg: str) -> str:
+                            return (await _wiz.prompt_async(msg)).strip()
                         try:
                             ui.print_info("Creating a new project…")
-                            name = (arg or pt_prompt("  Project name: ")).strip()
+                            name = (arg or await _ask("  Project name: "))
                             if not name:
                                 ui.print_error("Name is required.")
                                 continue
@@ -1127,7 +1130,7 @@ async def _chat_loop(
                             if name in PROJECTS:
                                 ui.print_error(f"Project '{name}' already exists. Use /projects update {name}.")
                                 continue
-                            path = pt_prompt("  Project root path: ").strip()
+                            path = await _ask("  Project root path: ")
                             if not path:
                                 ui.print_error("Path is required.")
                                 continue
@@ -1141,15 +1144,15 @@ async def _chat_loop(
                             ui.print_info(f"Auto-discovered: {', '.join(auto.keys()) or 'nothing'}")
 
                             # Prompt for optional fields (pre-fill with autodiscovered)
-                            description = pt_prompt(
-                                f"  Description [{auto.get('description', '')}]: "
-                            ).strip() or auto.get("description", "")
-                            repo_url = pt_prompt(
-                                f"  Repo URL [{auto.get('repo_url', '')}]: "
-                            ).strip() or auto.get("repo_url", "")
-                            issues_url = pt_prompt("  Issues URL (Jira/GitHub/Linear): ").strip()
-                            ci_url = pt_prompt("  CI URL: ").strip()
-                            docs_url = pt_prompt("  Docs URL: ").strip()
+                            description = (
+                                await _ask(f"  Description [{auto.get('description', '')}]: ")
+                            ) or auto.get("description", "")
+                            repo_url = (
+                                await _ask(f"  Repo URL [{auto.get('repo_url', '')}]: ")
+                            ) or auto.get("repo_url", "")
+                            issues_url = await _ask("  Issues URL (Jira/GitHub/Linear): ")
+                            ci_url = await _ask("  CI URL: ")
+                            docs_url = await _ask("  Docs URL: ")
 
                             # Config dir — try to detect .claude/
                             config_dir = ""
@@ -1158,7 +1161,7 @@ async def _chat_loop(
                                 config_dir = str(claude_dir)
                                 ui.print_info(f"Found .claude/ config dir: {config_dir}")
                             else:
-                                config_dir = pt_prompt("  Config dir (.claude/ path, or empty): ").strip()
+                                config_dir = await _ask("  Config dir (.claude/ path, or empty): ")
 
                             # Detect agents from config dir
                             agent_names: list[str] = []
@@ -1197,45 +1200,48 @@ async def _chat_loop(
                         if not proj:
                             ui.print_error(f"Project '{arg}' not found.")
                             continue
-                        from prompt_toolkit import prompt as pt_prompt
+                        from prompt_toolkit import PromptSession as _WizPS2
                         from dataclasses import replace as dc_replace
+                        _wiz2 = _WizPS2()
+                        async def _ask2(msg: str) -> str:
+                            return (await _wiz2.prompt_async(msg)).strip()
                         try:
                             ui.print_info(f"Updating project '{arg}' (press Enter to keep current value)…")
                             # Work on a copy to avoid dirty state on cancel
                             edits: dict = {}
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  Description [{proj.description}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["description"] = val
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  Repo URL [{proj.repo_url}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["repo_url"] = val
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  Issues URL [{proj.issues_url}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["issues_url"] = val
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  CI URL [{proj.ci_url}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["ci_url"] = val
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  Docs URL [{proj.docs_url}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["docs_url"] = val
-                            val = pt_prompt(
+                            val = await _ask2(
                                 f"  Default branch [{proj.default_branch}]: "
-                            ).strip()
+                            )
                             if val:
                                 edits["default_branch"] = val
-                            tech_input = pt_prompt(
+                            tech_input = await _ask2(
                                 f"  Tech stack (comma-sep) [{', '.join(proj.tech_stack)}]: "
-                            ).strip()
+                            )
                             if tech_input:
                                 edits["tech_stack"] = [t.strip() for t in tech_input.split(",") if t.strip()]
                             if edits:
