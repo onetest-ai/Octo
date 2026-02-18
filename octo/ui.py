@@ -652,6 +652,7 @@ def print_help() -> None:
         ("/tasks", "List background tasks"),
         ("/task <id> [cmd]", "Task details / cancel / resume"),
         ("/vp [cmd]", "Virtual Persona (status/enable/disable/allow/block/test/stats)"),
+        ("/swarm [cmd]", "Swarm (status/peers/add/remove/ping)"),
         ("/create-agent", "AI-assisted agent creation wizard"),
         ("/create-skill", "AI-assisted skill creation wizard"),
         ("/reload", "Hot-reload graph (re-reads .env, MCP, agents, skills)"),

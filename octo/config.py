@@ -271,6 +271,20 @@ VP_SELF_EMAILS = [
     if e.strip()
 ]
 
+# --- Swarm ---
+SWARM_ENABLED = os.getenv("SWARM_ENABLED", "false").lower() in ("true", "1", "yes")
+SWARM_NAME = os.getenv("SWARM_NAME", "")
+SWARM_PORT = int(os.getenv("SWARM_PORT", "9100"))
+SWARM_CAPABILITIES = [
+    c.strip() for c in os.getenv("SWARM_CAPABILITIES", "").split(",") if c.strip()
+]
+SWARM_DIR = OCTO_DIR / "swarm"
+# SWARM_DIR.mkdir() is intentionally NOT called here — created lazily when swarm is enabled
+SWARM_ROLE = os.getenv("SWARM_ROLE", "supervisor")  # "supervisor" or "worker"
+SWARM_TELEGRAM_MODE = os.getenv("SWARM_TELEGRAM_MODE", "private")  # "private" or "group"
+_swarm_group_raw = os.getenv("SWARM_TELEGRAM_GROUP_ID", "")
+SWARM_TELEGRAM_GROUP_ID: int | None = int(_swarm_group_raw) if _swarm_group_raw else None
+
 
 # parse_interval, parse_time_str imported from octo.core.constants
 # Backward-compat aliases

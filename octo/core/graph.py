@@ -788,6 +788,31 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
             + "\n".join(server_lines)
         )
 
+    # Swarm peers — show connected peer Octo instances
+    swarm_servers = [s for s in _summaries if s["server"].startswith("swarm-")]
+    if swarm_servers:
+        peer_lines = [
+            f"- **{s['server']}** ({s['tools']} tools): {s['summary']}"
+            for s in swarm_servers
+        ]
+        parts.append(
+            "## Swarm Peers\n\n"
+            "Other Octo instances are available on the network. Their tools "
+            "are accessible via `find_tools` / `call_mcp_tool` (prefixed with "
+            "their server name).\n\n"
+            "Each peer exposes:\n"
+            "- `ask(question, context)` — get an answer synchronously\n"
+            "- `dispatch_task(task, context, priority)` — queue a background task\n"
+            "- `check_task(task_id)` — check task status\n"
+            "- `get_info()` — peer capabilities and load\n\n"
+            "Use peer delegation when:\n"
+            "- A peer has capabilities matching the task\n"
+            "- You want parallel execution across instances\n"
+            "- The task can be self-contained\n\n"
+            "Connected peers:\n"
+            + "\n".join(peer_lines)
+        )
+
     return "\n\n---\n\n".join(parts)
 
 

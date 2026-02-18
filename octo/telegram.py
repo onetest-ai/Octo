@@ -219,6 +219,11 @@ class TelegramTransport:
         callbacks: list | None = None,
         graph_lock: asyncio.Lock | None = None,
         on_command: Callable[[str, str], Any] | None = None,
+        # Swarm group-mode params
+        swarm_mode: bool = False,
+        swarm_role: str = "worker",
+        swarm_name: str = "",
+        group_chat_id: int | None = None,
     ) -> None:
         self.graph_app = graph_app
         self.thread_id = thread_id
@@ -231,6 +236,121 @@ class TelegramTransport:
         # Generic reply router: telegram_msg_id → async handler(update, text)
         # Used by VP notifications, background tasks, and any future reply-routed feature.
         self._reply_handlers: dict[int, Callable[[Update, str], Awaitable[None]]] = {}
+        # Swarm group mode — multiple bots in one Telegram group
+        self._swarm_mode = swarm_mode
+        self._swarm_role = swarm_role     # "supervisor" catches unaddressed msgs
+        self._swarm_name = swarm_name     # for name-based mention detection
+        self._group_chat_id = group_chat_id
+        self._bot_username: str = ""      # resolved at start() via get_me()
+        self._bot_id: int = 0             # resolved at start() via get_me()
+
+    def _is_group_chat(self, update: Update) -> bool:
+        """Check if the message comes from a group/supergroup chat."""
+        if not update.message:
+            return False
+        return update.message.chat.type in ("group", "supergroup")
+
+    def _should_respond(self, update: Update) -> bool:
+        """In swarm group mode, decide if this Octo should respond.
+
+        Rules:
+        1. Direct @mention of this bot → respond
+        2. Name mention (SWARM_NAME in text) → respond
+        3. Reply to this bot's previous message → respond
+        4. No bot mentioned at all AND role is supervisor → respond
+        5. Otherwise → silently ignore (listen but don't react)
+        """
+        msg = update.message
+        if not msg or not msg.text:
+            return False
+
+        text = msg.text
+
+        # 1. Check for @bot_username mention in entities
+        if self._bot_username and msg.entities:
+            for entity in msg.entities:
+                if entity.type == "mention":
+                    mention = text[entity.offset:entity.offset + entity.length]
+                    if mention.lstrip("@").lower() == self._bot_username.lower():
+                        return True
+
+        # 2. Check for SWARM_NAME in text (e.g. "atlas, check the logs")
+        if self._swarm_name and self._swarm_name.lower() in text.lower():
+            return True
+
+        # 3. Reply to this bot's message → this bot should handle it
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            if msg.reply_to_message.from_user.id == self._bot_id:
+                return True
+
+        # 4. Supervisor catches unaddressed messages
+        if self._swarm_role == "supervisor":
+            # But if another bot IS mentioned, let that bot handle it
+            if msg.entities:
+                for entity in msg.entities:
+                    if entity.type == "mention":
+                        mention = text[entity.offset:entity.offset + entity.length]
+                        # A mention that isn't this bot → another bot is addressed
+                        if self._bot_username and mention.lstrip("@").lower() != self._bot_username.lower():
+                            return False
+            return True
+
+        return False
+
+    def _should_respond_media(self, update: Update) -> bool:
+        """Decide if this Octo should handle a media message (document/photo/voice).
+
+        In private chat or non-swarm: always respond.
+        In group mode: respond if reply-to this bot, or if supervisor and no reply target.
+        """
+        if not self._swarm_mode or not self._is_group_chat(update):
+            return True
+
+        msg = update.message
+        if not msg:
+            return False
+
+        # Reply to this bot's message
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            if msg.reply_to_message.from_user.id == self._bot_id:
+                return True
+
+        # Caption with @mention or name
+        caption = msg.caption or ""
+        if self._bot_username and f"@{self._bot_username}" in caption:
+            return True
+        if self._swarm_name and self._swarm_name.lower() in caption.lower():
+            return True
+
+        # Supervisor catches unaddressed media
+        if self._swarm_role == "supervisor":
+            if msg.reply_to_message and msg.reply_to_message.from_user:
+                # Replying to another bot's message — let them handle it
+                if msg.reply_to_message.from_user.id != self._bot_id:
+                    return False
+            return True
+
+        return False
+
+    async def send_to_peer(self, peer_bot_username: str, message: str) -> None:
+        """Send a message in the group chat mentioning a peer Octo bot.
+
+        Used for visible inter-Octo delegation (human stays in the loop).
+        """
+        chat_id = self._group_chat_id
+        if not chat_id or not self._app:
+            logger.warning("send_to_peer: no group chat ID or app not started")
+            return
+
+        text = f"@{peer_bot_username} {message}"
+        html = _markdown_to_telegram_html(text)
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=html, parse_mode="HTML")
+        except Exception:
+            try:
+                await self._app.bot.send_message(chat_id=chat_id, text=text)
+            except Exception:
+                logger.exception("Failed to send peer message to group")
 
     async def _send_typing(self, chat_id: int, stop_event: asyncio.Event) -> None:
         """Keep sending 'typing' action until stop_event is set."""
@@ -307,14 +427,18 @@ class TelegramTransport:
                 config["callbacks"] = self.callbacks
 
             # Tag message with channel metadata so supervisor can adapt formatting
+            if self._swarm_mode:
+                channel_tag = f"[Channel: Telegram Group | User: {sender_name} | Bot: {self._swarm_name}]"
+            else:
+                channel_tag = f"[Channel: Telegram | User: {sender_name}]" if sender_name else ""
             if isinstance(user_content, str):
-                tagged = f"[Channel: Telegram | User: {sender_name}]\n\n{user_content}" if sender_name else user_content
+                tagged = f"{channel_tag}\n\n{user_content}" if channel_tag else user_content
             else:
                 # Multimodal — prepend tag to the first text block
                 tagged = list(user_content)
-                if tagged and tagged[0].get("type") == "text" and sender_name:
+                if tagged and tagged[0].get("type") == "text" and channel_tag:
                     tagged[0] = dict(tagged[0])
-                    tagged[0]["text"] = f"[Channel: Telegram | User: {sender_name}]\n\n{tagged[0]['text']}"
+                    tagged[0]["text"] = f"{channel_tag}\n\n{tagged[0]['text']}"
 
             from octo.retry import invoke_with_retry
 
@@ -391,6 +515,11 @@ class TelegramTransport:
         """Handle incoming document/photo attachments."""
         if not update.message:
             return
+
+        # Swarm group mode — only handle if addressed to this bot
+        if self._swarm_mode and self._is_group_chat(update):
+            if not self._should_respond_media(update):
+                return
 
         sender_id = str(update.message.from_user.id) if update.message.from_user else ""
         if not _is_authorized(sender_id):
@@ -484,12 +613,26 @@ class TelegramTransport:
 
         sender_id = str(update.message.from_user.id) if update.message.from_user else ""
         if not _is_authorized(sender_id):
+            # In group mode, silently ignore unauthorized instead of replying
+            if self._swarm_mode and self._is_group_chat(update):
+                return
             await update.message.reply_text("Not authorized. Ask the owner to run /authorize.")
             return
+
+        # Swarm group mode — only respond if addressed to this bot
+        if self._swarm_mode and self._is_group_chat(update):
+            if not self._should_respond(update):
+                return
 
         user_text = update.message.text
         sender = self._sender_name(update)
         logger.info("Telegram message from %s: %s", sender, user_text[:100])
+
+        # Strip @bot_username from the text so the graph doesn't see it
+        if self._swarm_mode and self._bot_username:
+            user_text = re.sub(
+                rf"@{re.escape(self._bot_username)}\b", "", user_text,
+            ).strip()
 
         # --- Reply routing: reply to a tracked message → dispatch to handler ---
         reply_to = update.message.reply_to_message
@@ -725,8 +868,15 @@ class TelegramTransport:
         if not update.message or not update.message.voice:
             return
 
+        # Swarm group mode — only handle if addressed to this bot
+        if self._swarm_mode and self._is_group_chat(update):
+            if not self._should_respond_media(update):
+                return
+
         sender_id = str(update.message.from_user.id) if update.message.from_user else ""
         if not _is_authorized(sender_id):
+            if self._swarm_mode and self._is_group_chat(update):
+                return
             await update.message.reply_text("Not authorized. Ask the owner to run /authorize.")
             return
 
@@ -842,12 +992,26 @@ class TelegramTransport:
         else:
             await update.message.reply_text(f"User {target_id} not found.")
 
+    def _target_chat_id(self) -> int | None:
+        """Resolve the chat ID for outbound messages.
+
+        In swarm group mode, target the shared group chat.
+        Otherwise, target the owner's private chat.
+        """
+        if self._swarm_mode and self._group_chat_id:
+            return self._group_chat_id
+        if TELEGRAM_OWNER_ID:
+            return int(TELEGRAM_OWNER_ID)
+        return None
+
     async def send_proactive(self, text: str, source: str = "") -> None:
-        """Send a proactive message to the owner (not a reply to incoming)."""
-        if not self._app or not TELEGRAM_OWNER_ID:
+        """Send a proactive message to the owner or swarm group."""
+        if not self._app:
             return
 
-        chat_id = int(TELEGRAM_OWNER_ID)
+        chat_id = self._target_chat_id()
+        if not chat_id:
+            return
 
         if source:
             text = f"**[{source}]**\n\n{text}"
@@ -876,10 +1040,12 @@ class TelegramTransport:
         is called.  This is the generic mechanism used by VP notifications,
         background tasks, and any future reply-routed feature.
         """
-        if not self._app or not TELEGRAM_OWNER_ID:
+        if not self._app:
             return
 
-        chat_id = int(TELEGRAM_OWNER_ID)
+        chat_id = self._target_chat_id()
+        if not chat_id:
+            return
         sent_msg = None
         for chunk in _split_message(text):
             html_chunk = _markdown_to_telegram_html(chunk)
@@ -996,11 +1162,25 @@ class TelegramTransport:
 
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(drop_pending_updates=True)
+
+        # Resolve bot identity for swarm mention detection
+        bot_info = await self._app.bot.get_me()
+        self._bot_username = bot_info.username or ""
+        self._bot_id = bot_info.id
+        logger.info("Bot identity: @%s (id=%d)", self._bot_username, self._bot_id)
+
+        # In group mode, allow the bot to see all messages (disable privacy mode)
+        if self._swarm_mode:
+            await self._app.updater.start_polling(
+                drop_pending_updates=True,
+                allowed_updates=Update.ALL_TYPES,
+            )
+        else:
+            await self._app.updater.start_polling(drop_pending_updates=True)
 
         # Register command menu with Telegram so users see autocomplete
         from telegram import BotCommand
-        await self._app.bot.set_my_commands([
+        commands = [
             BotCommand("help", "Show available commands"),
             BotCommand("clear", "Reset conversation (new thread)"),
             BotCommand("compact", "Free context space"),
@@ -1013,8 +1193,18 @@ class TelegramTransport:
             BotCommand("restart", "Cold-restart process"),
             BotCommand("authorize", "Authorize a user (owner only)"),
             BotCommand("revoke", "Revoke user access (owner only)"),
-        ])
-        logger.info("Telegram bot started")
+        ]
+        if self._swarm_mode:
+            commands.append(BotCommand("swarm", "Swarm status"))
+        await self._app.bot.set_my_commands(commands)
+
+        if self._swarm_mode:
+            logger.info(
+                "Telegram bot started (swarm group mode, role=%s, name=%s)",
+                self._swarm_role, self._swarm_name,
+            )
+        else:
+            logger.info("Telegram bot started")
 
     async def stop(self) -> None:
         """Stop the Telegram bot."""

@@ -142,6 +142,20 @@ async def _chat_loop(
                 "  Fix the JSON syntax and run /mcp reload"
             )
             return [], {}
+        # Inject swarm peers as MCP servers
+        from octo.config import SWARM_ENABLED
+        if SWARM_ENABLED:
+            from octo.config import SWARM_DIR
+            from octo.swarm.registry import PeerRegistry
+            if SWARM_DIR.is_dir():
+                _peer_reg = PeerRegistry(SWARM_DIR)
+                for _peer in _peer_reg.load():
+                    _peer_key = f"swarm-{_peer.name}"
+                    if _peer_key not in configs:
+                        configs[_peer_key] = {
+                            "transport": "streamable_http",
+                            "url": _peer.url,
+                        }
         tools_flat = []
         tools_map: dict[str, list] = {}
         for sname, scfg in configs.items():
@@ -216,7 +230,7 @@ async def _chat_loop(
                             "/projects update", "/projects remove", "/projects reload",
                             "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
-                            "/bg", "/tasks", "/task",
+                            "/bg", "/tasks", "/task", "/swarm",
                             "/create-agent", "/create-skill", "/reload", "/restart",
                             "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
@@ -255,6 +269,14 @@ async def _chat_loop(
         # Telegram transport
         tg: TelegramTransport | None = None
         if not no_telegram and TELEGRAM_BOT_TOKEN:
+            # Swarm group mode params
+            from octo.config import (
+                SWARM_ENABLED, SWARM_TELEGRAM_MODE, SWARM_TELEGRAM_GROUP_ID,
+                SWARM_ROLE, SWARM_NAME,
+            )
+            _tg_swarm_mode = SWARM_ENABLED and SWARM_TELEGRAM_MODE == "group"
+            _tg_swarm_name = SWARM_NAME if _tg_swarm_mode else ""
+
             tg = TelegramTransport(
                 graph_app=app,
                 thread_id=thread_id,
@@ -262,10 +284,19 @@ async def _chat_loop(
                 on_response=lambda text: ui.print_response(text, source="Octi"),
                 callbacks=callbacks,
                 graph_lock=graph_lock,
+                swarm_mode=_tg_swarm_mode,
+                swarm_role=SWARM_ROLE if _tg_swarm_mode else "worker",
+                swarm_name=_tg_swarm_name,
+                group_chat_id=SWARM_TELEGRAM_GROUP_ID if _tg_swarm_mode else None,
             )
             await tg.start()
             set_telegram_transport(tg)
-            ui.print_status("Telegram bot connected", "green")
+            if _tg_swarm_mode:
+                ui.print_status(
+                    f"Telegram bot connected (swarm group mode, role={SWARM_ROLE})", "green",
+                )
+            else:
+                ui.print_status("Telegram bot connected", "green")
         config = {
             "configurable": {"thread_id": thread_id},
             "callbacks": callbacks,
@@ -340,6 +371,33 @@ async def _chat_loop(
         )
         set_worker_pool(_worker_pool)
 
+        # --- Swarm ---
+        swarm_runner = None
+        from octo.config import SWARM_ENABLED
+        if SWARM_ENABLED:
+            import socket
+            from octo.config import SWARM_NAME, SWARM_PORT, SWARM_CAPABILITIES, SWARM_DIR
+            from octo.swarm import set_swarm_runner
+            from octo.swarm.runner import SwarmRunner
+
+            SWARM_DIR.mkdir(parents=True, exist_ok=True)
+            _swarm_name = SWARM_NAME or (socket.gethostname().split(".")[0] + "-octo")
+
+            swarm_runner = SwarmRunner(
+                instance_name=_swarm_name,
+                port=SWARM_PORT,
+                capabilities=SWARM_CAPABILITIES,
+                swarm_dir=SWARM_DIR,
+                graph_app=app,
+                graph_lock=graph_lock,
+                main_loop=asyncio.get_running_loop(),
+                worker_pool=_worker_pool,
+                task_store=_bg_task_store,
+            )
+            swarm_runner.start()
+            set_swarm_runner(swarm_runner)
+            ui.print_status(f"Swarm active: {_swarm_name} on port {SWARM_PORT}", "green")
+
         hb_interval_display = HEARTBEAT_INTERVAL_SECONDS // 60
         ui.print_status(
             f"Heartbeat active (every {hb_interval_display}m, "
@@ -406,6 +464,8 @@ async def _chat_loop(
             cron_scheduler._app = app
             if vp_poller is not None:
                 vp_poller._octo_app = app
+            if swarm_runner is not None:
+                swarm_runner.update_graph(app)
             if tg is not None:
                 tg.graph_app = app
             # Refresh tab-completion with new skill and agent names
@@ -1683,6 +1743,78 @@ async def _chat_loop(
                             ui.print_info("\n".join(_lines))
                     continue
 
+                if user_input.startswith("/swarm"):
+                    from octo.config import SWARM_ENABLED as _sw_enabled
+                    if not _sw_enabled:
+                        ui.print_info("Swarm is disabled. Set SWARM_ENABLED=true in .env")
+                        continue
+                    from octo.swarm import get_swarm_runner
+                    from octo.swarm.registry import PeerRegistry
+                    from octo.config import SWARM_DIR as _sw_dir
+
+                    _sw_parts = user_input.split(maxsplit=2)
+                    _sw_sub = _sw_parts[1] if len(_sw_parts) > 1 else ""
+                    _sw_arg = _sw_parts[2].strip() if len(_sw_parts) > 2 else ""
+                    _sw_runner = get_swarm_runner()
+
+                    if not _sw_sub:
+                        # /swarm — show status
+                        _sw_status = "running" if _sw_runner and _sw_runner.running else "stopped"
+                        _sw_reg = PeerRegistry(_sw_dir)
+                        _sw_peers = _sw_reg.load()
+                        _sw_lines = [f"**Swarm**: {_sw_status}"]
+                        if _sw_runner:
+                            _sw_lines.append(f"  Name: `{_sw_runner.name}`, Port: `{_sw_runner.port}`")
+                        if _sw_peers:
+                            _sw_lines.append(f"  **Peers** ({len(_sw_peers)}):")
+                            for _p in _sw_peers:
+                                _sw_lines.append(f"    - `{_p.name}` ({_p.url}) [{_p.status}]")
+                        else:
+                            _sw_lines.append("  No peers configured. Add with: /swarm add <name> <url>")
+                        ui.print_info("\n".join(_sw_lines))
+
+                    elif _sw_sub == "peers":
+                        _sw_reg = PeerRegistry(_sw_dir)
+                        _sw_peers = _sw_reg.load()
+                        if not _sw_peers:
+                            ui.print_info("No peers configured.")
+                        else:
+                            for _p in _sw_peers:
+                                ui.print_info(f"  {_p.name}: {_p.url} [{_p.status}]")
+
+                    elif _sw_sub == "add" and _sw_arg:
+                        _sw_tokens = _sw_arg.split(maxsplit=1)
+                        if len(_sw_tokens) < 2:
+                            ui.print_error("Usage: /swarm add <name> <url>")
+                        else:
+                            _sw_reg = PeerRegistry(_sw_dir)
+                            _sw_reg.add_peer(_sw_tokens[0], _sw_tokens[1])
+                            ui.print_info(f"Added peer '{_sw_tokens[0]}'. Rebuilding graph...")
+                            await _rebuild_graph()
+                            ui.print_info("Done. Peer tools should now be available.")
+
+                    elif _sw_sub == "remove" and _sw_arg:
+                        _sw_reg = PeerRegistry(_sw_dir)
+                        if _sw_reg.remove_peer(_sw_arg):
+                            ui.print_info(f"Removed peer '{_sw_arg}'. Rebuilding graph...")
+                            await _rebuild_graph()
+                        else:
+                            ui.print_error(f"Peer '{_sw_arg}' not found.")
+
+                    elif _sw_sub == "ping":
+                        if _sw_runner:
+                            ui.print_info("Checking peers...")
+                            await _sw_runner._check_peers()
+                            _sw_reg = PeerRegistry(_sw_dir)
+                            _sw_peers = _sw_reg.load()
+                            for _p in _sw_peers:
+                                ui.print_info(f"  {_p.name}: {_p.status}")
+                        else:
+                            ui.print_info("Swarm not running.")
+                    else:
+                        ui.print_error("Usage: /swarm [peers|add <name> <url>|remove <name>|ping]")
+                    continue
+
                 if user_input.startswith("/vp"):
                     from octo.virtual_persona.commands import handle_vp_command
                     vp_args = user_input[3:].strip()
@@ -1738,6 +1870,8 @@ async def _chat_loop(
                     await heartbeat.stop()
                     await cron_scheduler.stop()
                     await _worker_pool.shutdown()
+                    if swarm_runner is not None:
+                        await swarm_runner.stop()
                     if vp_poller is not None:
                         vp_poller.stop()
                     if tg:
@@ -1897,6 +2031,8 @@ async def _chat_loop(
             await heartbeat.stop()
             await cron_scheduler.stop()
             await _worker_pool.shutdown()
+            if swarm_runner is not None:
+                await swarm_runner.stop()
             if vp_poller is not None:
                 vp_poller.stop()
             if tg:
