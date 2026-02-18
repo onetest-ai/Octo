@@ -274,7 +274,7 @@ class BackgroundWorkerPool:
 
     async def _run_process(self, task: BackgroundTask) -> None:
         """Execute a subprocess task. Done = process exit."""
-        from octo.config import ADDITIONAL_CLAUDE_ARGS
+        from octo.config import ADDITIONAL_CLAUDE_ARGS, CLAUDE_CODE_TIMEOUT
 
         command = task.command
         env = os.environ.copy()
@@ -287,8 +287,40 @@ class BackgroundWorkerPool:
         )
         env.update(env_overrides)
 
+        is_claude = _is_claude_command(command)
+
+        # GUARD: refuse to run claude without CLAUDE_CONFIG_DIR
+        if is_claude and "CLAUDE_CONFIG_DIR" not in env_overrides:
+            task.status = "failed"
+            task.error = (
+                "Refused: claude command launched without CLAUDE_CONFIG_DIR. "
+                "Register the project in .octo/projects/ or use the `project` "
+                "parameter in dispatch_background."
+            )
+            task.completed_at = _now()
+            self._store.save(task)
+            await self._on_complete(task.id, task.status, task.error)
+            return
+
+        # GUARD: enforce minimum timeout for claude commands
+        if is_claude and 0 < task.timeout < CLAUDE_CODE_TIMEOUT:
+            logger.warning(
+                "Task %s: timeout=%d too low for claude, overriding to %d",
+                task.id, task.timeout, CLAUDE_CODE_TIMEOUT,
+            )
+            task.timeout = CLAUDE_CODE_TIMEOUT
+            self._store.save(task)
+        # GUARD: enforce minimum timeout for test/long-running commands
+        elif _is_long_running_command(command) and 0 < task.timeout < _LONG_RUNNING_MIN_TIMEOUT:
+            logger.warning(
+                "Task %s: timeout=%d too low for test command, overriding to %d",
+                task.id, task.timeout, _LONG_RUNNING_MIN_TIMEOUT,
+            )
+            task.timeout = _LONG_RUNNING_MIN_TIMEOUT
+            self._store.save(task)
+
         # Inject ADDITIONAL_CLAUDE_ARGS into claude commands
-        if ADDITIONAL_CLAUDE_ARGS and command.lstrip().startswith("claude "):
+        if ADDITIONAL_CLAUDE_ARGS and is_claude:
             parts = shlex.split(command)
             extra = shlex.split(ADDITIONAL_CLAUDE_ARGS)
             # Insert after "claude" but before other args
@@ -576,6 +608,24 @@ def make_dispatch_background_tool():
         Use this when a task will take several minutes or more. Do NOT use
         for quick operations that finish in seconds.
 
+        IMPORTANT — timeout rules:
+        - For `claude -p` commands: ALWAYS use timeout=0 (no timeout). Claude Code
+          tasks routinely run 30-90 minutes. Setting 600 or 900 WILL kill the task
+          prematurely. The system enforces a minimum of CLAUDE_CODE_TIMEOUT for
+          claude commands — low values are auto-corrected.
+        - For test commands (pytest, robot, playwright, etc.): ALWAYS use timeout=0.
+          Test suites with Playwright/browser automation routinely run 30-60 minutes.
+          The system enforces a minimum of 3600s for test commands.
+        - For simple/quick shell commands (curl, ls, grep): a timeout is acceptable.
+        - timeout=0 means "run until done" — this is the CORRECT default for
+          ALL background tasks. Only set a non-zero timeout if you are CERTAIN the
+          command will finish quickly. When in doubt, use 0.
+
+        IMPORTANT — project requirement for claude commands:
+        - Claude commands MUST have a resolvable project (via `project` param or
+          `cwd` matching a registered project). Running claude without
+          CLAUDE_CONFIG_DIR is prohibited.
+
         Args:
             task_type: "process" for subprocess (claude -p, shell), "agent" for LangGraph agent
             command: Shell command for process mode (e.g., "claude -p 'analyze codebase'")
@@ -585,6 +635,7 @@ def make_dispatch_background_tool():
             agent_name: Optional agent name — also resolves the project automatically
             cwd: Working directory (overridden by project if both given)
             timeout: Max seconds before kill (0 = no timeout, runs until done). Default 0.
+                For claude -p commands, ALWAYS use 0. Low values are auto-corrected.
             max_turns: Max agent conversation turns (default 50, agent mode only)
         """
         pool = get_worker_pool()
@@ -605,6 +656,42 @@ def make_dispatch_background_tool():
             if not proj:
                 return f"Error: project '{project}' not found. Available: {', '.join(PROJECTS)}"
             cwd = cwd or proj.path
+
+        # Enforce rules for claude commands
+        _is_claude_cmd = _is_claude_command(command)
+        if _is_claude_cmd:
+            from octo.config import CLAUDE_CODE_TIMEOUT
+            # Validate project is resolvable (CLAUDE_CONFIG_DIR requirement)
+            from octo.core.tools.claude_code import _resolve_project
+            _, env_overrides, _ = _resolve_project(
+                agent_name=agent_name,
+                working_directory=cwd,
+            )
+            if "CLAUDE_CONFIG_DIR" not in env_overrides:
+                return (
+                    "Error: claude commands require a registered project with "
+                    "CLAUDE_CONFIG_DIR. Either pass `project` parameter with a "
+                    f"registered project name, or ensure `cwd` matches a known "
+                    f"project path. Running claude without project context is "
+                    f"prohibited."
+                )
+            # Enforce minimum timeout — low values kill claude prematurely
+            if 0 < timeout < CLAUDE_CODE_TIMEOUT:
+                logger.warning(
+                    "dispatch_background: timeout=%d too low for claude command, "
+                    "overriding to %d (CLAUDE_CODE_TIMEOUT)",
+                    timeout, CLAUDE_CODE_TIMEOUT,
+                )
+                timeout = CLAUDE_CODE_TIMEOUT
+        elif _is_long_running_command(command):
+            # Test suites (pytest, playwright, etc.) can run 30-60+ minutes
+            if 0 < timeout < _LONG_RUNNING_MIN_TIMEOUT:
+                logger.warning(
+                    "dispatch_background: timeout=%d too low for test command, "
+                    "overriding to %d",
+                    timeout, _LONG_RUNNING_MIN_TIMEOUT,
+                )
+                timeout = _LONG_RUNNING_MIN_TIMEOUT
 
         task_id = uuid.uuid4().hex[:8]
         task = BackgroundTask(
@@ -637,6 +724,54 @@ def make_dispatch_background_tool():
 
 
 # ── Helpers ───────────────────────────────────────────────────────
+
+def _is_claude_command(command: str) -> bool:
+    """Check if a shell command invokes Claude Code CLI."""
+    if not command:
+        return False
+    # Handle commands like "cd /foo && claude -p ...", "claude -p ...",
+    # or full paths like "/home/user/.local/bin/claude -p ..."
+    stripped = command.lstrip()
+    # Direct invocation
+    if stripped.startswith("claude ") or stripped.startswith("claude\t"):
+        return True
+    # Full path invocation (e.g., /usr/local/bin/claude)
+    if "/claude " in stripped or "/claude\t" in stripped:
+        return True
+    # After cd/env/etc: "cd /foo && claude -p ..."
+    if "&& claude " in stripped or "&& claude\t" in stripped:
+        return True
+    if "| claude " in stripped or "; claude " in stripped:
+        return True
+    return False
+
+
+# Minimum timeout for long-running commands (seconds).
+# pytest with Playwright/ReportPortal, robot, behave, etc. can run 30+ min.
+_LONG_RUNNING_MIN_TIMEOUT = 3600  # 1 hour
+
+# Patterns that indicate a long-running test/build command.
+_LONG_RUNNING_PATTERNS = (
+    "pytest", "python -m pytest",
+    "robot", "behave", "cucumber",
+    "npm test", "npm run test", "npx playwright",
+    "mvn test", "gradle test",
+    "make test", "make check",
+)
+
+
+def _is_long_running_command(command: str) -> bool:
+    """Check if a command is known to be potentially long-running (tests, builds)."""
+    if not command:
+        return False
+    # Normalize: look at the actual command after cd/env prefixes
+    # e.g., "cd /foo && pytest ..." or "/path/to/pytest ..."
+    lower = command.lower()
+    for pattern in _LONG_RUNNING_PATTERNS:
+        if pattern in lower:
+            return True
+    return False
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
