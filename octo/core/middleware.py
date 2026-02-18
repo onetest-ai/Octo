@@ -277,11 +277,71 @@ class ToolResultLimitMiddleware(AgentMiddleware):
         )
     """
 
+    # Tool name substrings that signal "structured data — don't blindly truncate".
+    # Matched against the resolved tool name (after MCP proxy unwrap).
+    # These are substrings, not exact names, so they work regardless of MCP
+    # server naming (e.g., "browser_snapshot", "playwright__browser_snapshot").
+    STRUCTURED_TOOL_PATTERNS: tuple[str, ...] = (
+        "screenshot", "snapshot", "console_messages", "network_requests",
+        "page_content", "dom_", "element",
+    )
+
+    # Content markers that indicate structured/reference data that loses
+    # meaning when truncated (e.g., element refs, base64 images, JSON-RPC).
+    STRUCTURED_CONTENT_MARKERS: tuple[str, ...] = (
+        '"ref":', '"selector":', '"base64":', '"data:image/',
+        '"accessibilityName":', '"role":', '"children":',
+    )
+
     def __init__(self, max_chars: int | None = None):
         if max_chars is None:
             from octo.config import TOOL_RESULT_LIMIT
             max_chars = TOOL_RESULT_LIMIT
         self.max_chars = max_chars
+
+    def _resolve_tool_name(self, request: ToolCallRequest) -> str:
+        """Get the actual tool name, unwrapping MCP proxy if needed."""
+        tool_name = request.tool_call.get("name", "")
+        if tool_name == "call_mcp_tool":
+            return request.tool_call.get("args", {}).get("tool_name", "")
+        return tool_name
+
+    def _is_structured_tool(self, tool_name: str) -> bool:
+        """Check if the tool name matches known structured-data patterns."""
+        lower = tool_name.lower()
+        return any(p in lower for p in self.STRUCTURED_TOOL_PATTERNS)
+
+    def _has_structured_content(self, content: Any) -> bool:
+        """Detect structured content by checking for reference markers.
+
+        A quick heuristic: if the first 2000 chars contain JSON-like
+        structural markers (element refs, selectors, base64), treat
+        the entire result as structured data.
+        """
+        if isinstance(content, str):
+            sample = content[:2000]
+            return any(m in sample for m in self.STRUCTURED_CONTENT_MARKERS)
+        if isinstance(content, list):
+            sample = str(content[:3])[:2000]
+            return any(m in sample for m in self.STRUCTURED_CONTENT_MARKERS)
+        return False
+
+    def _should_skip(self, request: ToolCallRequest, result: Any = None) -> bool:
+        """Decide if this tool result should bypass truncation.
+
+        Checks both the tool name (pattern match) and the content itself
+        (structural markers). This way new MCP servers with structured
+        output are handled automatically without hardcoding names.
+        """
+        tool_name = self._resolve_tool_name(request)
+        if self._is_structured_tool(tool_name):
+            return True
+        # Check content for structural markers
+        if result is not None:
+            content = getattr(result, "content", None) if hasattr(result, "content") else result
+            if content and self._has_structured_content(content):
+                return True
+        return False
 
     # -- sync --
 
@@ -291,6 +351,8 @@ class ToolResultLimitMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
         result = handler(request)
+        if self._should_skip(request, result):
+            return result
         return self._maybe_truncate(result)
 
     # -- async --
@@ -301,6 +363,8 @@ class ToolResultLimitMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
         result = await handler(request)
+        if self._should_skip(request, result):
+            return result
         return self._maybe_truncate(result)
 
     # -- truncation logic --
