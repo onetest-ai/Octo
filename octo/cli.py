@@ -394,16 +394,11 @@ async def _chat_loop(
             # be mid-execution using MCP tools; tearing down sessions first causes
             # anyio cancel scope propagation that crashes the event loop.
             await _worker_pool.shutdown()
-            # Close MCP sessions. anyio cancel scopes can propagate CancelledError
-            # even through asyncio.shield, so catch and swallow it.
-            try:
-                await asyncio.shield(session_pool.close_all())
-            except BaseException as exc:
-                logger.debug("MCP session close interrupted: %s", exc)
-            try:
-                await asyncio.sleep(0.05)  # let cancel scopes settle
-            except asyncio.CancelledError:
-                pass  # anyio scope propagation — safe to ignore
+            # Close MCP sessions directly — do NOT use asyncio.shield() here:
+            # shield creates an inner task, but anyio requires cancel scopes
+            # to exit in the same task that entered them.  Calling close_all()
+            # inline keeps everything in the main task.
+            await session_pool.close_all()
             mcp_tools, mcp_tools_by_server = await _load_mcp_servers()
             app, agent_configs, skills = await build_graph(mcp_tools, mcp_tools_by_server)
             # Update proactive runners with new graph

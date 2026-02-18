@@ -389,3 +389,4 @@ class MCPSessionPool:
         """Close all persistent sessions (for shutdown or reload)."""
         for name in list(self._stacks):
             await self.close(name)
+        self._configs.clear()
