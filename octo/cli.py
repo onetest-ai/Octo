@@ -352,17 +352,51 @@ async def _chat_loop(
 
         async def _deliver_bg(task_id: str, status: str, text: str) -> None:
             if status == "completed":
-                msg = f"**Completed:**\n\n{text}"
+                display_msg = f"**Completed:**\n\n{text}"
             elif status == "paused":
-                msg = text  # already formatted with question
+                display_msg = text  # already formatted with question
             else:
-                msg = f"**Failed:**\n\n{text}"
-            # CLI: always show
-            ui.print_response(msg, source=f"Octi (Task {task_id})")
-            # Telegram: use tracked notification so user can reply-to resume
+                display_msg = f"**Failed:**\n\n{text}"
+
+            # Show result to user immediately (CLI + Telegram)
+            ui.print_response(display_msg, source=f"Octi (Task {task_id})")
             if tg:
-                source_msg = f"**[Task {task_id}]**\n\n{msg}"
-                await tg.send_bg_notification(source_msg, task_id)
+                await tg.send_bg_notification(
+                    f"**[Task {task_id}]**\n\n{display_msg}", task_id,
+                )
+
+            # Paused tasks — user resumes manually, no history injection
+            if status == "paused":
+                return
+
+            # Inject result as AIMessage so the agent has context on the next
+            # user-initiated turn.  AIMessage = agent's own subsystem reporting
+            # back, won't trigger the model to "respond" to itself.
+            from langchain_core.messages import AIMessage
+            status_label = "completed" if status == "completed" else "failed"
+            truncated = text[:4000]
+            if len(text) > 4000:
+                truncated += "\n... (truncated)"
+
+            # Include original objective so agent can cross-validate on next turn
+            task_obj = _bg_task_store.load(task_id)
+            objective = ""
+            if task_obj:
+                objective = task_obj.prompt or task_obj.command or ""
+
+            context_parts = [
+                f"[Background task {task_id} {status_label}]",
+            ]
+            if objective:
+                context_parts.append(f"Objective: {objective}")
+            context_parts.append(f"Result:\n{truncated}")
+
+            try:
+                await app.aupdate_state(config, {
+                    "messages": [AIMessage(content="\n".join(context_parts))]
+                })
+            except Exception:
+                pass  # best-effort — result is already shown to user
 
         _worker_pool = BackgroundWorkerPool(
             store=_bg_task_store,
@@ -475,6 +509,39 @@ async def _chat_loop(
                 + [f"/{a.name}" for a in agent_configs]
             )
 
+        async def _graceful_restart(label: str = "Restarting") -> None:
+            """Gracefully shut down all subsystems and exec a fresh process.
+
+            Session continuity is preserved via --thread flag. The new process
+            picks up the same conversation from the checkpointer — identical to
+            hot reload from the agent's perspective, but clean and reliable.
+            """
+            import sys as _sys
+            import os as _os
+            save_session(thread_id, model=active_model)
+            ui.print_info(f"{label} Octo (session {thread_id})...")
+            await heartbeat.stop()
+            await cron_scheduler.stop()
+            await _worker_pool.shutdown()
+            if swarm_runner is not None:
+                await swarm_runner.stop()
+            if vp_poller is not None:
+                vp_poller.stop()
+            if tg:
+                await tg.stop()
+            await session_pool.close_all()
+            restart_args = [_sys.executable, "-m", "octo", "chat",
+                            "--thread", thread_id]
+            if verbose:
+                restart_args.append("--verbose")
+            if debug:
+                restart_args.append("--debug")
+            if voice_mod.is_enabled():
+                restart_args.append("--voice")
+            if no_telegram:
+                restart_args.append("--no-telegram")
+            _os.execv(_sys.executable, restart_args)
+
         async def _tg_command_handler(cmd: str, args: str) -> str | None:
             """Handle slash commands from Telegram. Returns response text or None to pass through."""
             nonlocal thread_id
@@ -496,8 +563,8 @@ async def _chat_loop(
                     "`/mcp disable <name>` — Disable MCP server\n"
                     "`/mcp enable <name>` — Enable MCP server\n"
                     "`/model` — Show current model\n"
-                    "`/reload` — Hot-reload (re-reads .env, MCP, agents, skills)\n"
-                    "`/restart` — Cold-restart process (same thread)\n"
+                    "`/reload` — Restart with session restore (re-reads everything)\n"
+                    "`/restart` — Same as /reload\n"
                     "`/help` — This message\n\n"
                     "Unrecognized `/commands` pass through to the AI."
                 )
@@ -741,41 +808,8 @@ async def _chat_loop(
 
             # ── System ───────────────────────────────────────────────────
 
-            if cmd == "reload":
-                from dotenv import load_dotenv
-                load_dotenv(override=True)
-                import importlib
-                import octo.config as _config_mod
-                importlib.reload(_config_mod)
-                await _rebuild_graph()
-                return (
-                    f"Reloaded: {len(mcp_tools)} tools, "
-                    f"{len(agent_configs)} agents, "
-                    f"{len(skills)} skills"
-                )
-
-            if cmd == "restart":
-                import sys as _sys
-                import os as _os
-                await heartbeat.stop()
-                await cron_scheduler.stop()
-                await _worker_pool.shutdown()
-                if vp_poller is not None:
-                    vp_poller.stop()
-                if tg:
-                    await tg.stop()
-                await session_pool.close_all()
-                restart_args = [_sys.executable, "-m", "octo", "chat",
-                                "--thread", thread_id]
-                if verbose:
-                    restart_args.append("--verbose")
-                if debug:
-                    restart_args.append("--debug")
-                if voice_mod.is_enabled():
-                    restart_args.append("--voice")
-                if no_telegram:
-                    restart_args.append("--no-telegram")
-                _os.execv(_sys.executable, restart_args)
+            if cmd in ("reload", "restart"):
+                await _graceful_restart(label="Reloading" if cmd == "reload" else "Restarting")
 
             # Unknown command — return None to pass through to graph as text
             return None
@@ -1848,47 +1882,9 @@ async def _chat_loop(
                         ui.print_info(f"Done. {len(skills)} skill(s) loaded.")
                     continue
 
-                if user_input == "/reload":
-                    ui.print_info("Reloading graph (MCP servers, agents, skills, config)...")
-                    from dotenv import load_dotenv
-                    load_dotenv(override=True)
-                    import importlib
-                    import octo.config as _config_mod
-                    importlib.reload(_config_mod)
-                    await _rebuild_graph()
-                    ui.print_info(
-                        f"Reloaded: {len(mcp_tools)} tools, "
-                        f"{len(agent_configs)} agents, "
-                        f"{len(skills)} skills"
-                    )
-                    continue
-
-                if user_input == "/restart":
-                    import sys as _sys
-                    import os as _os
-                    ui.print_info(f"Restarting Octo (thread {thread_id})...")
-                    await heartbeat.stop()
-                    await cron_scheduler.stop()
-                    await _worker_pool.shutdown()
-                    if swarm_runner is not None:
-                        await swarm_runner.stop()
-                    if vp_poller is not None:
-                        vp_poller.stop()
-                    if tg:
-                        await tg.stop()
-                    await session_pool.close_all()
-                    # Preserve current flags for session continuity
-                    restart_args = [_sys.executable, "-m", "octo", "chat",
-                                    "--thread", thread_id]
-                    if verbose:
-                        restart_args.append("--verbose")
-                    if debug:
-                        restart_args.append("--debug")
-                    if voice_mod.is_enabled():
-                        restart_args.append("--voice")
-                    if no_telegram:
-                        restart_args.append("--no-telegram")
-                    _os.execv(_sys.executable, restart_args)
+                if user_input in ("/reload", "/restart"):
+                    label = "Reloading" if user_input == "/reload" else "Restarting"
+                    await _graceful_restart(label=label)
 
                 # Check for skill or agent invocation
                 if user_input.startswith("/"):

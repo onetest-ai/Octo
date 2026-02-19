@@ -43,6 +43,9 @@ class BackgroundTask:
     thread_id: str = ""
     max_turns: int = 50
 
+    # Environment overrides (project env, CLAUDE_CONFIG_DIR, etc.)
+    env_overrides: dict[str, str] = field(default_factory=dict)
+
     # Common
     timeout: int = 0  # 0 = no timeout (fire-and-forget)
     created_at: str = ""
@@ -279,12 +282,18 @@ class BackgroundWorkerPool:
         command = task.command
         env = os.environ.copy()
 
-        # Resolve project-specific env (CLAUDE_CONFIG_DIR, etc.) from cwd
-        from octo.core.tools.claude_code import _resolve_project
-        resolved_cwd, env_overrides, _ = _resolve_project(
-            agent_name=task.agent_name,
-            working_directory=task.cwd,
-        )
+        # Use env_overrides stored on the task (set by dispatch_background).
+        # Fall back to path-based resolution for backward compat (old tasks
+        # persisted without env_overrides).
+        if task.env_overrides:
+            env_overrides = task.env_overrides
+            resolved_cwd = task.cwd
+        else:
+            from octo.core.tools.claude_code import _resolve_project
+            resolved_cwd, env_overrides, _ = _resolve_project(
+                agent_name=task.agent_name,
+                working_directory=task.cwd,
+            )
         env.update(env_overrides)
 
         is_claude = _is_claude_command(command)
@@ -649,25 +658,30 @@ def make_dispatch_background_tool():
         if task_type == "agent" and not prompt:
             return "Error: 'prompt' is required for agent mode."
 
-        # Resolve project → cwd from registry
+        # Resolve project → cwd + env from registry (direct, no path re-discovery)
+        task_env: dict[str, str] = {}
         if project:
             from octo.config import PROJECTS
             proj = PROJECTS.get(project)
             if not proj:
                 return f"Error: project '{project}' not found. Available: {', '.join(PROJECTS)}"
             cwd = cwd or proj.path
+            task_env = dict(proj.env)  # copy — includes CLAUDE_CONFIG_DIR if set
+        elif cwd or agent_name:
+            # No explicit project — fall back to path-based resolution
+            from octo.core.tools.claude_code import _resolve_project
+            resolved_cwd, env_overrides, _ = _resolve_project(
+                agent_name=agent_name,
+                working_directory=cwd,
+            )
+            cwd = cwd or resolved_cwd
+            task_env = env_overrides
 
         # Enforce rules for claude commands
         _is_claude_cmd = _is_claude_command(command)
         if _is_claude_cmd:
             from octo.config import CLAUDE_CODE_TIMEOUT
-            # Validate project is resolvable (CLAUDE_CONFIG_DIR requirement)
-            from octo.core.tools.claude_code import _resolve_project
-            _, env_overrides, _ = _resolve_project(
-                agent_name=agent_name,
-                working_directory=cwd,
-            )
-            if "CLAUDE_CONFIG_DIR" not in env_overrides:
+            if "CLAUDE_CONFIG_DIR" not in task_env:
                 return (
                     "Error: claude commands require a registered project with "
                     "CLAUDE_CONFIG_DIR. Either pass `project` parameter with a "
@@ -704,6 +718,7 @@ def make_dispatch_background_tool():
             agent_name=agent_name,
             thread_id=f"bg:{task_id}" if task_type == "agent" else "",
             cwd=cwd,
+            env_overrides=task_env,
             timeout=timeout,
             max_turns=max_turns,
         )
