@@ -106,7 +106,7 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
             Bedrock Converse API but still count toward context).
     """
     import logging
-    from langchain_core.messages import SystemMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     from octo.models import _detect_provider
 
