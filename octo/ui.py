@@ -655,6 +655,7 @@ def print_help() -> None:
         ("/swarm [cmd]", "Swarm (status/peers/add/remove/ping)"),
         ("/create-agent", "AI-assisted agent creation wizard"),
         ("/create-skill", "AI-assisted skill creation wizard"),
+        ("/update", "Git pull + pip install + restart (OTA update)"),
         ("/reload", "Restart with session restore (re-reads everything)"),
         ("/restart", "Same as /reload"),
         ("/voice on|off", "Toggle TTS"),

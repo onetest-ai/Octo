@@ -231,7 +231,7 @@ async def _chat_loop(
                             "/sessions", "/plan", "/profile",
                             "/voice", "/model", "/mcp", "/cron", "/heartbeat", "/vp",
                             "/bg", "/tasks", "/task", "/swarm",
-                            "/create-agent", "/create-skill", "/reload", "/restart",
+                            "/create-agent", "/create-skill", "/reload", "/restart", "/update",
                             "/state", "/memory", "exit", "quit"]
         slash_cmds = (_BASE_SLASH_CMDS
                       + [f"/{s.name}" for s in skills]
@@ -807,6 +807,24 @@ async def _chat_loop(
                 return "Usage: `/mcp [find <q>|remove <name>|disable <name>|enable <name>|reload]`"
 
             # ── System ───────────────────────────────────────────────────
+
+            if cmd == "update":
+                import sys as _sys, subprocess as _sp
+                from pathlib import Path as _Path
+                repo_dir = str(_Path(__file__).resolve().parent.parent)
+                pull = _sp.run(
+                    ["git", "pull", "--ff-only"],
+                    cwd=repo_dir, capture_output=True, text=True, timeout=60,
+                )
+                if pull.returncode != 0:
+                    return f"git pull failed:\n```\n{pull.stderr.strip()}\n```"
+                install = _sp.run(
+                    [_sys.executable, "-m", "pip", "install", "-e", repo_dir, "-q"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if install.returncode != 0:
+                    return f"pip install failed:\n```\n{install.stderr.strip()}\n```"
+                await _graceful_restart(label="Updating")
 
             if cmd in ("reload", "restart"):
                 await _graceful_restart(label="Reloading" if cmd == "reload" else "Restarting")
@@ -1881,6 +1899,30 @@ async def _chat_loop(
                         await _rebuild_graph()
                         ui.print_info(f"Done. {len(skills)} skill(s) loaded.")
                     continue
+
+                if user_input == "/update":
+                    import sys as _sys, subprocess as _sp
+                    from pathlib import Path as _Path
+                    repo_dir = str(_Path(__file__).resolve().parent.parent)
+                    ui.print_info(f"Pulling latest code from {repo_dir}...")
+                    pull = _sp.run(
+                        ["git", "pull", "--ff-only"],
+                        cwd=repo_dir, capture_output=True, text=True, timeout=60,
+                    )
+                    if pull.returncode != 0:
+                        ui.print_error(f"git pull failed:\n{pull.stderr.strip()}")
+                        continue
+                    ui.print_info(pull.stdout.strip())
+                    ui.print_info("Installing updated package...")
+                    install = _sp.run(
+                        [_sys.executable, "-m", "pip", "install", "-e", repo_dir, "-q"],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if install.returncode != 0:
+                        ui.print_error(f"pip install failed:\n{install.stderr.strip()}")
+                        continue
+                    ui.print_info("Update complete. Restarting...")
+                    await _graceful_restart(label="Updating")
 
                 if user_input in ("/reload", "/restart"):
                     label = "Reloading" if user_input == "/reload" else "Restarting"
