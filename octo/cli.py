@@ -810,13 +810,13 @@ async def _chat_loop(
 
             if cmd == "update":
                 import sys as _sys, subprocess as _sp
-                _pkg = "octo-agent"
+                _pkg = "octo-agent[all]"
                 install = _sp.run(
                     [_sys.executable, "-m", "pip", "install", "--upgrade", _pkg],
-                    capture_output=True, text=True, timeout=180,
+                    timeout=300,
                 )
                 if install.returncode != 0:
-                    return f"Update failed:\n```\n{install.stderr.strip()}\n```"
+                    return "Update failed — check server logs."
                 await _graceful_restart(label="Updating")
 
             if cmd in ("reload", "restart"):
@@ -1895,14 +1895,14 @@ async def _chat_loop(
 
                 if user_input == "/update":
                     import sys as _sys, subprocess as _sp
-                    _pkg = "octo-agent"
+                    _pkg = "octo-agent[all]"
                     ui.print_info("Updating octo-agent...")
                     install = _sp.run(
                         [_sys.executable, "-m", "pip", "install", "--upgrade", _pkg],
-                        capture_output=True, text=True, timeout=180,
+                        timeout=300,
                     )
                     if install.returncode != 0:
-                        ui.print_error(f"Update failed:\n{install.stderr.strip()}")
+                        ui.print_error("Update failed — check output above.")
                         continue
                     ui.print_info("Update complete. Restarting...")
                     await _graceful_restart(label="Updating")
