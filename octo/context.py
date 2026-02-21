@@ -1,7 +1,7 @@
 """System prompt composer — reads persona files and memory."""
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 from octo.config import PERSONA_DIR, MEMORY_DIR, STATE_PATH, SYSTEM_PROMPT_BUDGET
@@ -16,17 +16,6 @@ def _read_if_exists(path: Path) -> str:
 def build_system_prompt() -> str:
     """Compose the supervisor system prompt from .octo/persona/ files."""
     parts: list[str] = []
-
-    # Current date and time — helps with search relevance and time-aware responses
-    now = datetime.now(timezone.utc)
-    local_now = datetime.now()
-    parts.append(
-        f"# Current Date & Time\n\n"
-        f"- **Today**: {now.strftime('%A, %B %d, %Y')}\n"
-        f"- **UTC**: {now.strftime('%Y-%m-%d %H:%M')}\n"
-        f"- **Local**: {local_now.strftime('%Y-%m-%d %H:%M')}\n\n"
-        f"Use the current year ({now.year}) when searching for recent information."
-    )
 
     # Core identity
     for name in ("SOUL.md", "IDENTITY.md", "USER.md", "AGENTS.md"):
@@ -54,13 +43,13 @@ def build_system_prompt() -> str:
         parts.append(f"# Current Project State\n\n{state}")
 
     # Enforce budget: truncate lowest-priority sections first.
-    # Parts order: [0]=date, [1..4]=identity files, [5+]=memory/state (lower priority)
+    # Parts order: [0..3]=identity files, [4+]=memory/state (lower priority)
     _SEP = "\n\n---\n\n"
     total = sum(len(p) for p in parts) + len(_SEP) * max(0, len(parts) - 1)
     if total > SYSTEM_PROMPT_BUDGET:
         overflow = total - SYSTEM_PROMPT_BUDGET
-        # Truncate from end (lowest priority first); protect indices 0..4
-        protected = min(5, len(parts))
+        # Truncate from end (lowest priority first); protect identity files
+        protected = min(4, len(parts))
         for idx in range(len(parts) - 1, protected - 1, -1):
             if overflow <= 0:
                 break

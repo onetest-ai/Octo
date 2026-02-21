@@ -249,6 +249,32 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
 
         return result
 
+    def _stamp_date(msgs):
+        """Prepend current date/time to the last HumanMessage.
+
+        Injected into llm_input_messages (what the LLM sees), not stored state.
+        Placed in the last message because it's always new — doesn't invalidate
+        prompt caching (breakpoint 1 = system prompt, breakpoint 2 = convo prefix).
+        """
+        if not msgs:
+            return msgs
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc)
+        local_now = _dt.now()
+        date_note = (
+            f"[Current: {now.strftime('%A, %B %d, %Y')} | "
+            f"UTC {now.strftime('%H:%M')} | "
+            f"Local {local_now.strftime('%H:%M')}]\n\n"
+        )
+        # Find last HumanMessage and prepend date
+        for i in range(len(msgs) - 1, -1, -1):
+            if isinstance(msgs[i], HumanMessage) and isinstance(msgs[i].content, str):
+                msgs[i] = msgs[i].model_copy(update={
+                    "content": date_note + msgs[i].content,
+                })
+                break
+        return msgs
+
     def pre_model_hook(state):
         messages = state.get("messages", [])
 
@@ -282,10 +308,10 @@ def _build_pre_model_hook(model_name: str, tool_count: int = 0):
             # Use llm_input_messages to send trimmed context to LLM
             # without accidentally growing the state via add_messages reducer.
             # State cleanup is handled by /compact and auto_compact in retry.py.
-            return {"llm_input_messages": _inject_cache_breakpoints([marker] + trimmed)}
+            return {"llm_input_messages": _inject_cache_breakpoints(_stamp_date([marker] + trimmed))}
 
         # Stage 3: inject cache breakpoints for prompt caching
-        return {"llm_input_messages": _inject_cache_breakpoints(messages)}
+        return {"llm_input_messages": _inject_cache_breakpoints(_stamp_date(messages))}
 
     return pre_model_hook
 
