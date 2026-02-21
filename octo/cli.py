@@ -810,20 +810,13 @@ async def _chat_loop(
 
             if cmd == "update":
                 import sys as _sys, subprocess as _sp
-                from pathlib import Path as _Path
-                repo_dir = str(_Path(__file__).resolve().parent.parent)
-                pull = _sp.run(
-                    ["git", "pull", "--ff-only"],
-                    cwd=repo_dir, capture_output=True, text=True, timeout=60,
-                )
-                if pull.returncode != 0:
-                    return f"git pull failed:\n```\n{pull.stderr.strip()}\n```"
+                _pkg = "octo-agent"
                 install = _sp.run(
-                    [_sys.executable, "-m", "pip", "install", "-e", repo_dir, "-q"],
-                    capture_output=True, text=True, timeout=120,
+                    [_sys.executable, "-m", "pip", "install", "--upgrade", _pkg],
+                    capture_output=True, text=True, timeout=180,
                 )
                 if install.returncode != 0:
-                    return f"pip install failed:\n```\n{install.stderr.strip()}\n```"
+                    return f"Update failed:\n```\n{install.stderr.strip()}\n```"
                 await _graceful_restart(label="Updating")
 
             if cmd in ("reload", "restart"):
@@ -1902,24 +1895,14 @@ async def _chat_loop(
 
                 if user_input == "/update":
                     import sys as _sys, subprocess as _sp
-                    from pathlib import Path as _Path
-                    repo_dir = str(_Path(__file__).resolve().parent.parent)
-                    ui.print_info(f"Pulling latest code from {repo_dir}...")
-                    pull = _sp.run(
-                        ["git", "pull", "--ff-only"],
-                        cwd=repo_dir, capture_output=True, text=True, timeout=60,
-                    )
-                    if pull.returncode != 0:
-                        ui.print_error(f"git pull failed:\n{pull.stderr.strip()}")
-                        continue
-                    ui.print_info(pull.stdout.strip())
-                    ui.print_info("Installing updated package...")
+                    _pkg = "octo-agent"
+                    ui.print_info("Updating octo-agent...")
                     install = _sp.run(
-                        [_sys.executable, "-m", "pip", "install", "-e", repo_dir, "-q"],
-                        capture_output=True, text=True, timeout=120,
+                        [_sys.executable, "-m", "pip", "install", "--upgrade", _pkg],
+                        capture_output=True, text=True, timeout=180,
                     )
                     if install.returncode != 0:
-                        ui.print_error(f"pip install failed:\n{install.stderr.strip()}")
+                        ui.print_error(f"Update failed:\n{install.stderr.strip()}")
                         continue
                     ui.print_info("Update complete. Restarting...")
                     await _graceful_restart(label="Updating")
