@@ -641,3 +641,61 @@ def make_schedule_task_tool():
         return f"Scheduled: '{task}' \u2014 next run at {next_run.strftime('%Y-%m-%d %H:%M UTC')}"
 
     return schedule_task
+
+
+def make_manage_scheduled_tasks_tool():
+    """Build the manage_scheduled_tasks LangChain tool. Call after set_cron_store()."""
+    from langchain_core.tools import tool
+
+    @tool
+    def manage_scheduled_tasks(
+        action: str,
+        job_id: str = "",
+    ) -> str:
+        """List, cancel, pause, or resume scheduled tasks.
+
+        Use this when the user wants to see, stop, or pause their scheduled/cron tasks.
+
+        Args:
+            action: "list" (show all), "cancel" (remove a job), "pause", "resume".
+            job_id: Required for cancel/pause/resume — the short job ID.
+        """
+        if _cron_store is None:
+            return "Error: Cron scheduler not initialized."
+
+        if action == "list":
+            jobs = _cron_store.load()
+            if not jobs:
+                return "No scheduled tasks."
+            lines = []
+            for j in jobs:
+                status = "paused" if j.paused else "active"
+                try:
+                    next_dt = datetime.fromisoformat(j.next_run)
+                    next_str = next_dt.strftime("%Y-%m-%d %H:%M UTC")
+                except (ValueError, TypeError):
+                    next_str = j.next_run or "unknown"
+                lines.append(
+                    f"- **{j.id}** [{status}] ({j.type.value} {j.spec}) "
+                    f"next: {next_str} — {j.task}"
+                )
+            return "\n".join(lines)
+
+        if not job_id:
+            return f"Error: job_id is required for '{action}'."
+
+        if action == "cancel":
+            if _cron_store.remove(job_id):
+                return f"Cancelled job {job_id}."
+            return f"Job {job_id} not found."
+
+        if action in ("pause", "resume"):
+            result = _cron_store.toggle_pause(job_id)
+            if result is None:
+                return f"Job {job_id} not found."
+            new_state = "paused" if result else "active"
+            return f"Job {job_id} is now {new_state}."
+
+        return f"Unknown action: {action}. Use: list, cancel, pause, resume"
+
+    return manage_scheduled_tasks

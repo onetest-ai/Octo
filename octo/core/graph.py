@@ -737,7 +737,12 @@ def _build_supervisor_prompt(skills: list, octo_agents: list[AgentConfig] | None
         "- `every`: Recurring interval. Spec examples: '30m', '2h', '1d'\n"
         "- `cron`: Cron expression. Spec examples: '0 9 * * MON-FRI'\n\n"
         "Set `isolated=True` for tasks that don't need conversation context.\n"
-        "Results are delivered to the user via Telegram and CLI."
+        "Results are delivered to the user via Telegram and CLI.\n\n"
+        "Use `manage_scheduled_tasks` to list, cancel, pause, or resume scheduled tasks:\n"
+        "- `action='list'` — show all scheduled tasks with their IDs and status\n"
+        "- `action='cancel', job_id='<id>'` — permanently remove a scheduled task\n"
+        "- `action='pause', job_id='<id>'` — temporarily pause a task\n"
+        "- `action='resume', job_id='<id>'` — resume a paused task"
     )
 
     parts.append(
@@ -1102,8 +1107,9 @@ async def build_graph(
     prompt = _build_supervisor_prompt(skills, octo_agents=octo_agents)
 
     # Build schedule_task tool (cron scheduling)
-    from octo.heartbeat import make_schedule_task_tool
+    from octo.heartbeat import make_schedule_task_tool, make_manage_scheduled_tasks_tool
     schedule_task = make_schedule_task_tool()
+    manage_scheduled_tasks = make_manage_scheduled_tasks_tool()
 
     # Build dispatch_background tool (background workers)
     from octo.background import make_dispatch_background_tool
@@ -1189,7 +1195,7 @@ async def build_graph(
         list(BUILTIN_TOOLS)
         + [find_tools, call_mcp_tool]
         + _plan_tools + [use_skill] + _mem_tools
-        + [schedule_task, send_file, dispatch_background]
+        + [schedule_task, manage_scheduled_tasks, send_file, dispatch_background]
     )
 
     # --- Model healthcheck at startup -----------------------------------------
