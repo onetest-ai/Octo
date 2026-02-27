@@ -37,6 +37,45 @@ def get_mcp_server_summaries() -> list[dict[str, str]]:
     return _mcp_server_summaries
 
 
+def build_tool_catalog() -> str:
+    """Build a compact tool catalog string for inclusion in the system prompt.
+
+    Groups tools by service (using ``_tool_to_server`` reverse index) and
+    returns a markdown-formatted summary with tool names and one-line
+    descriptions.  This tells the LLM *what* is available so it can call
+    ``call_mcp_tool(name, args)`` directly without needing ``find_tools``
+    every time.
+    """
+    if not _mcp_tool_registry:
+        return ""
+
+    by_server: dict[str, list[tuple[str, str]]] = {}
+    for name, t in _mcp_tool_registry.items():
+        server = _tool_to_server.get(name, "other")
+        desc = (t.description or "").split("\n")[0][:80]
+        by_server.setdefault(server, []).append((name, desc))
+
+    lines = [f"**{len(_mcp_tool_registry)} tools** available via `call_mcp_tool(name, args)`:\n"]
+    for server, tools in sorted(by_server.items()):
+        # Group by service prefix for cleaner output
+        prefixes: dict[str, list[str]] = {}
+        for name, desc in sorted(tools):
+            prefix = name.split("_")[0] if "_" in name else name
+            prefixes.setdefault(prefix, []).append(name)
+
+        # Show tool names grouped by prefix
+        for prefix, names in sorted(prefixes.items()):
+            if len(names) <= 3:
+                lines.append(f"- {', '.join(names)}")
+            else:
+                lines.append(f"- {prefix}_*: {', '.join(names[:3])}, ... (+{len(names) - 3} more)")
+
+    lines.append(
+        "\nUse `find_tools(query)` to search by keyword and see parameter schemas."
+    )
+    return "\n".join(lines)
+
+
 def register_mcp_tools(tools_by_server: dict[str, list]) -> None:
     """Populate the deferred MCP tool registry from per-server tool lists."""
     _mcp_tool_registry.clear()
@@ -55,6 +94,11 @@ def register_mcp_tools(tools_by_server: dict[str, list]) -> None:
             "tools": len(tools),
             "summary": summary,
         })
+    logger.info(
+        "MCP registry: %d tools across %d servers",
+        len(_mcp_tool_registry),
+        len(tools_by_server),
+    )
 
 
 @tool

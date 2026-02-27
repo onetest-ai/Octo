@@ -40,6 +40,7 @@ from octo.core.tools.mcp_proxy import (
     register_mcp_tools as _register_mcp_tools,
     get_mcp_tool, set_session_pool,
     get_mcp_server_summaries,
+    build_tool_catalog,
 )
 from octo.core.tools.telegram_tools import set_telegram_transport
 
@@ -686,6 +687,11 @@ def _build_supervisor_prompt(
     base = build_system_prompt(persona_files=persona_files)
     parts = [base]
 
+    # Tool catalog — tells the LLM what tools are available via call_mcp_tool
+    catalog = build_tool_catalog()
+    if catalog:
+        parts.append(f"## Available Tools\n\n{catalog}")
+
     # Only show LLM-invocable skills in the prompt
     llm_skills = [s for s in skills if s.model_invocation]
     if llm_skills:
@@ -727,11 +733,11 @@ def _build_supervisor_prompt(
 
     parts.append(
         "## Efficiency\n\n"
-        "For short or ambiguous user messages (under ~15 words, no clear task):\n"
-        "- Respond directly from your knowledge and memory first\n"
-        "- Do NOT launch tool calls to investigate unless specifically asked\n"
-        "- If you genuinely need more info, ask the user one clarifying question\n"
-        "- A 2-sentence answer is better than 10 tool calls followed by a paragraph"
+        "- For greetings and casual chat, respond directly without tools.\n"
+        "- When the user asks about data, pages, entities, or anything that requires "
+        "real information, ALWAYS use tools — even for short messages.\n"
+        "- Prefer calling `call_mcp_tool` directly for tools you already know by name.\n"
+        "- Use `find_tools(query)` only when you need to discover new tools."
     )
 
     parts.append(
@@ -1237,6 +1243,7 @@ async def build_graph(
         skills, octo_agents=octo_agents, persona_files=persona_files,
         engine_mode=engine_mode,
     )
+    logger.info("System prompt: %d chars, %d tool(s) in catalog", len(prompt), len(build_tool_catalog().splitlines()) - 2 if build_tool_catalog() else 0)
 
     # CLI-only tools (require persistent process — not available in engine/server mode)
     _cli_only_tools: list = []

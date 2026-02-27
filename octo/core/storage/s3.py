@@ -115,11 +115,16 @@ class S3Storage:
             Delimiter="/",
         )
         results = []
+        # Files directly under this prefix (return names relative to prefix)
         for obj in response.get("Contents", []):
-            key = obj["Key"]
-            if self._prefix and key.startswith(self._prefix):
-                key = key[len(self._prefix):]
-            results.append(key)
+            relative = obj["Key"][len(full_prefix):]
+            if relative:
+                results.append(relative)
+        # Subdirectories under this prefix (CommonPrefixes)
+        for cp in response.get("CommonPrefixes", []):
+            relative = cp["Prefix"][len(full_prefix):]
+            if relative:
+                results.append(relative)
         return results
 
     def _delete_sync(self, path: str) -> None:
