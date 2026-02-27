@@ -301,8 +301,7 @@ def _build_pre_model_hook(
                     if user_name:
                         parts.append(f"User: {user_name}")
                     if product_name:
-                        pid_short = product_id[:8] if product_id else ""
-                        parts.append(f"Product: {product_name}" + (f" ({pid_short}...)" if pid_short else ""))
+                        parts.append(f"Product: {product_name}" + (f" (id: {product_id})" if product_id else ""))
                     meta_parts.append("[" + " | ".join(parts) + "]")
         except Exception:
             pass  # Metadata injection is optional — never break the hook
