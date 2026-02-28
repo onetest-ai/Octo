@@ -50,10 +50,11 @@ def _handle_winch(signum, frame):
     console._height = None
 
 
-try:
-    signal.signal(signal.SIGWINCH, _handle_winch)
-except (OSError, ValueError):
-    pass  # not on main thread or signal not available on this platform
+if hasattr(signal, "SIGWINCH"):
+    try:
+        signal.signal(signal.SIGWINCH, _handle_winch)
+    except (OSError, ValueError):
+        pass  # not on main thread
 
 # ── Context usage (updated by graph.py pre_model_hook) ───────────────
 # Module-level ref — graph.py sets this dict; the toolbar reads it.
