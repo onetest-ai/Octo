@@ -428,7 +428,17 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             ["AGENT_DIRS"],
         ),
         ("Telegram", "Optional Telegram bot integration", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID"]),
-        ("Voice (ElevenLabs)", "Optional TTS", ["ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"]),
+        (
+            "Voice",
+            "STT/TTS engine selection + credentials\n"
+            "# STT: elevenlabs (cloud) or whisper (local command)\n"
+            "# TTS: elevenlabs (cloud) or kokoro (local command)",
+            [
+                "VOICE_STT_ENGINE", "VOICE_TTS_ENGINE",
+                "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID",
+                "WHISPER_COMMAND", "KOKORO_COMMAND",
+            ],
+        ),
     ]
 
     lines = [

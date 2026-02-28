@@ -1404,6 +1404,17 @@ async def _chat_loop(
                         voice_mod.toggle_voice(True)
                     elif arg == "off":
                         voice_mod.toggle_voice(False)
+                    elif arg == "status":
+                        info = voice_mod.engine_info()
+                        ui.print_info(
+                            f"Voice: {'on' if voice_mod.is_enabled() else 'off'}\n"
+                            f"  STT: {info['stt']} (ready: {info['stt_ready']})\n"
+                            f"  TTS: {info['tts']} (ready: {info['tts_ready']})"
+                        )
+                        continue
+                    elif arg:
+                        ui.print_warning(f"Unknown /voice arg: {arg}. Use on|off|status.")
+                        continue
                     else:
                         voice_mod.toggle_voice()
                     ui.print_info(f"Voice: {'on' if voice_mod.is_enabled() else 'off'}")

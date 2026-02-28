@@ -659,7 +659,7 @@ def print_help() -> None:
         ("/update", "Install latest version from GitHub + restart"),
         ("/reload", "Restart with session restore (re-reads everything)"),
         ("/restart", "Same as /reload"),
-        ("/voice on|off", "Toggle TTS"),
+        ("/voice on|off|status", "Toggle TTS / show engine info"),
         ("/model <name>", "Switch model"),
         ("/<agent> <prompt>", "Send prompt directly to a specific agent"),
         ("/<skill>", "Invoke a skill"),

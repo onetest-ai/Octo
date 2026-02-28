@@ -490,11 +490,11 @@ class TelegramTransport:
                 logger.debug("HTML send failed, falling back to plain text")
                 await update.message.reply_text(chunk)
 
-        # Send voice reply if requested and ElevenLabs is available
+        # Send voice reply if requested (ElevenLabs or local engine)
         if voice_reply:
             try:
                 from octo.voice import synthesize
-                audio = await synthesize(response_text)
+                audio = await synthesize(response_text, prep=True)
                 if audio:
                     await update.message.reply_voice(voice=audio)
             except Exception:

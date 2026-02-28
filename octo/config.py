@@ -304,6 +304,16 @@ VP_ACTIVE_END_TIME = _parse_time_str(VP_ACTIVE_END)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 
+# Engine selection: "elevenlabs" (cloud) or "whisper"/"kokoro" (local subprocess)
+VOICE_STT_ENGINE = os.getenv("VOICE_STT_ENGINE", "elevenlabs")
+VOICE_TTS_ENGINE = os.getenv("VOICE_TTS_ENGINE", "elevenlabs")
+
+# Configurable commands for local engines (full command line)
+# STT: {WHISPER_COMMAND} <input_audio_file> → text on stdout
+# TTS: {KOKORO_COMMAND} <output_audio_file> ← text on stdin, audio to output file
+WHISPER_COMMAND = os.getenv("WHISPER_COMMAND", "")
+KOKORO_COMMAND = os.getenv("KOKORO_COMMAND", "")
+
 
 # --- Project registry ---
 # Each project is a JSON file under .octo/projects/<name>.json.
