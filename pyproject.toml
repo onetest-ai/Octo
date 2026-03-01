@@ -33,7 +33,8 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml",
     "langfuse>=2.0",
-    "deepagents"
+    "deepagents",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

@@ -1,12 +1,10 @@
 """Voice module — multi-engine STT/TTS with voiceover text preparation.
 
 Engines:
-  STT: ElevenLabs (cloud) or configurable command (e.g. Whisper)
-  TTS: ElevenLabs (cloud) or configurable command (e.g. Kokoro)
+  STT: Sirens (local, default) or ElevenLabs (cloud)
+  TTS: Sirens (local, default) or ElevenLabs (cloud)
 
-Subprocess protocol for local engines:
-  STT: {WHISPER_COMMAND} <input_audio_file>  →  text on stdout
-  TTS: {KOKORO_COMMAND} <output_audio_file>  ←  text on stdin, audio to file
+Sirens is an OpenAI-compatible local media proxy (http://localhost:8555).
 """
 from __future__ import annotations
 
@@ -14,10 +12,8 @@ import asyncio
 import io
 import logging
 import os
-import shlex
 import sys
 import tempfile
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +45,21 @@ def is_enabled() -> bool:
 
 def engine_info() -> dict[str, str]:
     """Return current engine configuration for /voice status."""
-    from octo.config import (
-        VOICE_STT_ENGINE, VOICE_TTS_ENGINE,
-        ELEVENLABS_API_KEY, WHISPER_COMMAND, KOKORO_COMMAND,
-    )
+    from octo.config import VOICE_STT_ENGINE, VOICE_TTS_ENGINE
+    from octo.core.tools.mcp_proxy import get_mcp_tool
+
     stt = VOICE_STT_ENGINE.lower()
     tts = VOICE_TTS_ENGINE.lower()
-    stt_ready = (
-        bool(ELEVENLABS_API_KEY) if stt == "elevenlabs"
-        else bool(WHISPER_COMMAND)
-    )
-    tts_ready = (
-        bool(ELEVENLABS_API_KEY) if tts == "elevenlabs"
-        else bool(KOKORO_COMMAND)
-    )
+    if stt == "elevenlabs":
+        from octo.config import ELEVENLABS_API_KEY
+        stt_ready = bool(ELEVENLABS_API_KEY)
+    else:
+        stt_ready = get_mcp_tool("transcribe_audio") is not None
+    if tts == "elevenlabs":
+        from octo.config import ELEVENLABS_API_KEY
+        tts_ready = bool(ELEVENLABS_API_KEY)
+    else:
+        tts_ready = get_mcp_tool("generate_speech") is not None
     return {
         "stt": stt,
         "tts": tts,
@@ -81,7 +78,7 @@ async def transcribe(audio_data: bytes) -> str:
 
     if engine == "elevenlabs":
         return await _transcribe_elevenlabs(audio_data)
-    return await _transcribe_command(audio_data)
+    return await _transcribe_sirens(audio_data)
 
 
 async def synthesize(text: str, prep: bool = True) -> bytes | None:
@@ -103,7 +100,7 @@ async def synthesize(text: str, prep: bool = True) -> bytes | None:
 
     if engine == "elevenlabs":
         return await _synthesize_elevenlabs(text)
-    return await _synthesize_command(text)
+    return await _synthesize_sirens(text)
 
 
 async def speak(text: str) -> None:
@@ -119,8 +116,8 @@ async def speak(text: str) -> None:
         if not ELEVENLABS_API_KEY:
             return
     else:
-        from octo.config import KOKORO_COMMAND
-        if not KOKORO_COMMAND:
+        from octo.core.tools.mcp_proxy import get_mcp_tool
+        if not get_mcp_tool("generate_speech"):
             return
 
     audio = await synthesize(text, prep=True)
@@ -163,6 +160,57 @@ async def prepare_for_voice(text: str) -> str:
     except Exception:
         logger.debug("Voiceover prep failed, using raw text", exc_info=True)
         return text
+
+
+# ── Sirens engines (via MCP) ──────────────────────────────────────────
+
+async def _transcribe_sirens(audio_data: bytes) -> str:
+    """Transcribe via Sirens MCP tool (transcribe_audio)."""
+    from octo.core.tools.mcp_proxy import invoke_mcp_tool
+
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".ogg")
+        os.write(fd, audio_data)
+        os.close(fd)
+        result = await invoke_mcp_tool("transcribe_audio", {"file_path": tmp})
+        return result or ""
+    except Exception:
+        logger.exception("Sirens STT error")
+        return ""
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+async def _synthesize_sirens(text: str) -> bytes | None:
+    """Synthesize via Sirens MCP tool (generate_speech)."""
+    from pathlib import Path
+
+    from octo.config import SIRENS_VOICE
+    from octo.core.tools.mcp_proxy import invoke_mcp_tool
+
+    try:
+        result = await invoke_mcp_tool("generate_speech", {
+            "text": text[:5000],
+            "voice": SIRENS_VOICE,
+            "response_format": "wav",
+        })
+        if not result:
+            return None
+        p = Path(result)
+        if not p.is_file():
+            logger.warning("TTS output file not found: %s", result)
+            return None
+        audio = p.read_bytes()
+        p.unlink(missing_ok=True)
+        return audio
+    except Exception:
+        logger.exception("Sirens TTS error")
+        return None
 
 
 # ── ElevenLabs engines ───────────────────────────────────────────────
@@ -221,132 +269,6 @@ async def _synthesize_elevenlabs(text: str) -> bytes | None:
     except Exception:
         logger.exception("ElevenLabs TTS error")
         return None
-
-
-# ── Configurable command engines ─────────────────────────────────────
-
-def _parse_command(command_str: str) -> list[str]:
-    """Parse a command string into args list (cross-platform)."""
-    if _IS_WINDOWS:
-        try:
-            return shlex.split(command_str, posix=False)
-        except ValueError:
-            return command_str.split()
-    return shlex.split(command_str)
-
-
-async def _transcribe_command(audio_data: bytes) -> str:
-    """Transcribe audio via configurable STT command (e.g. Whisper).
-
-    Protocol: {WHISPER_COMMAND} <input_audio_file> -> text on stdout
-    """
-    from octo.config import WHISPER_COMMAND
-
-    if not WHISPER_COMMAND:
-        logger.warning("WHISPER_COMMAND not set — cannot transcribe")
-        return ""
-
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".ogg")
-        os.write(fd, audio_data)
-        os.close(fd)
-
-        cmd = _parse_command(WHISPER_COMMAND) + [tmp_path]
-        logger.debug("STT command: %s", cmd)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=120,
-        )
-
-        if proc.returncode != 0:
-            logger.warning(
-                "STT command failed (exit %d): %s",
-                proc.returncode, stderr.decode(errors="replace")[:500],
-            )
-            return ""
-
-        return stdout.decode(errors="replace").strip()
-    except asyncio.TimeoutError:
-        logger.warning("STT command timed out after 120s")
-        return ""
-    except FileNotFoundError as e:
-        logger.warning("STT command not found: %s", e)
-        return ""
-    except Exception:
-        logger.exception("STT command error")
-        return ""
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-
-
-async def _synthesize_command(text: str) -> bytes | None:
-    """Synthesize audio via configurable TTS command (e.g. Kokoro).
-
-    Protocol: {KOKORO_COMMAND} <output_audio_file> <- text on stdin
-    """
-    from octo.config import KOKORO_COMMAND
-
-    if not KOKORO_COMMAND:
-        logger.warning("KOKORO_COMMAND not set — cannot synthesize")
-        return None
-
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-
-        cmd = _parse_command(KOKORO_COMMAND) + [tmp_path]
-        logger.debug("TTS command: %s", cmd)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(input=text[:5000].encode()),
-            timeout=180,
-        )
-
-        if proc.returncode != 0:
-            logger.warning(
-                "TTS command failed (exit %d): %s",
-                proc.returncode, stderr.decode(errors="replace")[:500],
-            )
-            return None
-
-        output = Path(tmp_path)
-        if not output.exists() or output.stat().st_size == 0:
-            logger.warning("TTS command produced no output file")
-            return None
-
-        return output.read_bytes()
-    except asyncio.TimeoutError:
-        logger.warning("TTS command timed out after 180s")
-        return None
-    except FileNotFoundError as e:
-        logger.warning("TTS command not found: %s", e)
-        return None
-    except Exception:
-        logger.exception("TTS command error")
-        return None
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
 
 
 # ── Audio playback ───────────────────────────────────────────────────

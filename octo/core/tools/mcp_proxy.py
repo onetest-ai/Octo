@@ -191,4 +191,29 @@ async def call_mcp_tool(tool_name: str, arguments: dict | None = None) -> str:
         return f"[Tool error] {tool_name}: {type(e).__name__}: {e}"
 
 
+async def invoke_mcp_tool(name: str, args: dict | None = None) -> str | None:
+    """Call an MCP tool programmatically (from non-graph code like voice.py).
+
+    Returns result string, or None if tool not registered.
+    Includes auto-reconnect for dead STDIO sessions.
+    """
+    t = _mcp_tool_registry.get(name)
+    if not t:
+        return None
+    try:
+        return str(await t.ainvoke(args or {}))
+    except Exception as e:
+        server = _tool_to_server.get(name)
+        if server and _session_pool and _is_session_error(e):
+            logger.warning("MCP session '%s' died, reconnecting...", server)
+            new_tools = await _session_pool.reconnect(server)
+            for nt in new_tools:
+                _mcp_tool_registry[nt.name] = nt
+                _tool_to_server[nt.name] = server
+            t2 = _mcp_tool_registry.get(name)
+            if t2:
+                return str(await t2.ainvoke(args or {}))
+        raise
+
+
 MCP_PROXY_TOOLS = [find_tools, call_mcp_tool]
