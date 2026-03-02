@@ -63,11 +63,15 @@ def build_swarm_mcp_server(
             prompt = f"Context from a peer Octo instance:\n{context}\n\nQuestion: {question}"
 
         async def _invoke() -> str:
+            from octo.retry import invoke_with_retry
+
             thread_id = f"swarm-{instance_name}-{uuid.uuid4().hex[:8]}"
+            config = {"configurable": {"thread_id": thread_id}}
             async with graph_lock:
-                result = await graph_app.ainvoke(
+                result = await invoke_with_retry(
+                    graph_app,
                     {"messages": [HumanMessage(content=prompt)]},
-                    config={"configurable": {"thread_id": thread_id}},
+                    config,
                 )
             # Extract the last AI message
             messages = result.get("messages", [])
@@ -77,9 +81,9 @@ def build_swarm_mcp_server(
             return "(no response)"
 
         try:
-            return await _run_on_main_async(_invoke(), timeout=120.0)
+            return await _run_on_main_async(_invoke(), timeout=300.0)
         except TimeoutError:
-            return "Error: request timed out (120s)"
+            return "Error: request timed out (300s)"
         except Exception as exc:
             logger.exception("ask() failed")
             return f"Error: {exc}"
