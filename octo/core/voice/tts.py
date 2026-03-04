@@ -144,6 +144,17 @@ def _detect_language(text: str) -> str:
 
 # ── Synchronous synthesis ────────────────────────────────────────────
 
+def _estimate_max_tokens(text: str) -> int:
+    """Estimate max_new_tokens to prevent runaway generation.
+
+    Qwen3-TTS 12Hz produces ~12 audio tokens per second of speech.
+    Average speaking rate: ~4 chars/sec (Russian/Chinese) to ~12 chars/sec (English).
+    We use a conservative ~3 chars/sec → ~4 tokens/char, with 3x safety margin.
+    Minimum 2048 to avoid cutting short normal speech.
+    """
+    return max(2048, len(text) * 12)
+
+
 def _synthesize_sync(
     text: str,
     voice: str,
@@ -162,12 +173,15 @@ def _synthesize_sync(
     if lang == "Auto":
         lang = _LANG_DEFAULTS.get(speaker, "English")
 
+    gen_kwargs = dict(_GEN_KWARGS)
+    gen_kwargs["max_new_tokens"] = _estimate_max_tokens(text)
+
     wavs, sr = model.generate_custom_voice(
         text=text,
         language=lang,
         speaker=speaker,
         instruct=instruct or "",
-        **_GEN_KWARGS,
+        **gen_kwargs,
     )
 
     buf = io.BytesIO()
@@ -181,7 +195,7 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+|(?<=[\u3002\uff01\uff1f])")
 _CLAUSE_RE = re.compile(r"(?<=[,;\u3001\uff0c\uff1b])\s*")
 
 
-def chunk_text(text: str, max_chars: int = 1000) -> list[str]:
+def chunk_text(text: str, max_chars: int = 200) -> list[str]:
     """Split text into chunks at sentence boundaries."""
     text = text.strip()
     if not text:
@@ -274,7 +288,7 @@ async def synthesize(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
-    max_chars: int = 1000,
+    max_chars: int = 200,
 ) -> bytes:
     """Synthesize text to WAV bytes. Auto-chunks long text."""
     chunks = chunk_text(text, max_chars)
