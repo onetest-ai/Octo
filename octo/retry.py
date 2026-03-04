@@ -573,7 +573,11 @@ async def invoke_with_retry(
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            result = await app.ainvoke(input_data, config=config)
+            # On first attempt, send the user's input.
+            # On retries, pass None so LangGraph continues from checkpoint
+            # state without adding a duplicate HumanMessage.
+            payload = input_data if attempt == 0 else None
+            result = await app.ainvoke(payload, config=config)
 
             # Post-invocation: detect empty Bedrock responses
             if not _has_substantive_response(result):
@@ -617,7 +621,7 @@ async def invoke_with_retry(
                 repaired = await auto_repair_orphaned_tools(app, config)
                 if repaired:
                     try:
-                        return await app.ainvoke(input_data, config=config)
+                        return await app.ainvoke(None, config=config)
                     except Exception as e2:
                         # If repair didn't fix it, try cleaning the bad messages
                         category2 = _classify_error(e2)
@@ -627,7 +631,7 @@ async def invoke_with_retry(
                                 await on_retry("Removing corrupted messages from checkpoint...", attempt + 1)
                             cleaned = await auto_clean_corrupted(app, config)
                             if cleaned:
-                                return await app.ainvoke(input_data, config=config)
+                                return await app.ainvoke(None, config=config)
                         raise e2
                 raise  # repair found nothing, re-raise original
 
@@ -637,7 +641,7 @@ async def invoke_with_retry(
                 compacted = await auto_compact(app, config)
                 if compacted:
                     try:
-                        return await app.ainvoke(input_data, config=config)
+                        return await app.ainvoke(None, config=config)
                     except Exception as e2:
                         raise e2
                 raise  # compact failed, give up
@@ -652,7 +656,7 @@ async def invoke_with_retry(
                     compacted = await auto_compact(app, config)
                     if compacted:
                         try:
-                            return await app.ainvoke(input_data, config=config)
+                            return await app.ainvoke(None, config=config)
                         except Exception as e2:
                             last_error = e2
                             # Fall through to retry with client reset

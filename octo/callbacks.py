@@ -450,7 +450,7 @@ class OctiCallbackHandler(BaseCallbackHandler):
             hint = "The provider is overloaded. Wait a moment and try again."
         elif "connection was closed" in error_lower or "connection reset" in error_lower or "broken pipe" in error_lower:
             user_message = "Connection lost"
-            hint = "The LLM provider dropped the connection (possibly content policy). Auto-repair will fix the checkpoint."
+            hint = "The LLM provider dropped the connection. Retrying from checkpoint — no work lost."
         elif "expected toolresult" in error_lower or "expected tool_result" in error_lower:
             user_message = "Orphaned tool call in history"
             hint = "A previous connection drop left corrupted state. Auto-repair is fixing this."
