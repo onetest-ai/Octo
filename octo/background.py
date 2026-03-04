@@ -450,17 +450,29 @@ class BackgroundWorkerPool:
         except Exception:
             mcp_tools_available = []
 
+        # Voice tools (local TTS/STT — available when [voice] extra installed)
+        voice_tools_available: list = []
+        try:
+            from octo.core.voice import is_available
+            if is_available():
+                from octo.core.tools.voice_tools import VOICE_TOOLS
+                voice_tools_available = list(VOICE_TOOLS)
+        except ImportError:
+            pass
+
         if agent_cfg and agent_cfg.tools:
             # Agent specifies tool names — resolve from builtin + MCP proxy
             builtin_by_name = {t.name: t for t in BUILTIN_TOOLS}
             all_mcp_by_name = {t.name: t for t in mcp_tools_available}
+            voice_by_name = {t.name: t for t in voice_tools_available}
             agent_tools = [builtin_by_name[n] for n in agent_cfg.tools if n in builtin_by_name]
             agent_tools += [all_mcp_by_name[n] for n in agent_cfg.tools if n in all_mcp_by_name]
+            agent_tools += [voice_by_name[n] for n in agent_cfg.tools if n in voice_by_name]
             # If agent requests tools not in builtin/mcp, they get MCP proxy as fallback
             if not agent_tools:
-                agent_tools = list(BUILTIN_TOOLS) + mcp_tools_available
+                agent_tools = list(BUILTIN_TOOLS) + mcp_tools_available + voice_tools_available
         else:
-            agent_tools = list(BUILTIN_TOOLS) + mcp_tools_available
+            agent_tools = list(BUILTIN_TOOLS) + mcp_tools_available + voice_tools_available
 
         all_tools = agent_tools + task_tools
 
