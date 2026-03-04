@@ -553,9 +553,17 @@ class BackgroundWorkerPool:
         else:
             input_msg = {"messages": [HumanMessage(content=task.prompt)]}
 
+        from octo.retry import invoke_with_retry
+
+        async def _bg_on_retry(msg: str, attempt: int) -> None:
+            logger.warning("BG task %s: %s", task.id, msg)
+
         turn = 0
         while turn < task.max_turns:
-            result = await agent.ainvoke(input_msg, config=config)
+            result = await invoke_with_retry(
+                agent, input_msg, config=config,
+                on_retry=_bg_on_retry,
+            )
             turn += 1
 
             # Check sentinel flags from tool closures

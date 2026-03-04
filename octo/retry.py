@@ -676,9 +676,9 @@ async def invoke_with_retry(
                     reset_bedrock_client()
                 except ImportError:
                     pass
-                # Clean up any partial AIMessage left by the dropped connection
-                # (orphaned tool_calls that would cause "Expected toolResult" on retry)
-                await auto_clean_corrupted(app, config)
+                # Do NOT preemptively clean the checkpoint — retry first.
+                # If the checkpoint is corrupted, the retry will fail with
+                # "orphaned_tools" and the handler above will repair it.
                 delay = _BACKOFF_TIMEOUT[min(attempt, len(_BACKOFF_TIMEOUT) - 1)]
                 if on_retry:
                     await on_retry(f"Connection lost, reconnecting in {delay}s ({attempt + 1}/{_MAX_RETRIES})...", attempt + 1)
