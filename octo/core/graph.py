@@ -535,6 +535,8 @@ def _build_worker_agents(
     *,
     model_config: dict | None = None,
     context_limits: dict | None = None,
+    disable_builtin_tools: bool = False,
+    builtin_tools_override: list | None = None,
 ) -> list:
     """Create standard agents from AGENT.md configs using create_agent.
 
@@ -550,7 +552,13 @@ def _build_worker_agents(
     anthropic_cache, bedrock_cache = _caching_middleware()
 
     # Index builtin + lifecycle tools by name for agent-specific filtering
-    builtin_by_name = {t.name: t for t in BUILTIN_TOOLS}
+    if builtin_tools_override is not None:
+        _builtin = list(builtin_tools_override)
+    elif disable_builtin_tools:
+        _builtin = []
+    else:
+        _builtin = list(BUILTIN_TOOLS)
+    builtin_by_name = {t.name: t for t in _builtin}
     lifecycle_by_name = {t.name: t for t in AGENT_LIFECYCLE_TOOLS}
     all_named = {**builtin_by_name, **lifecycle_by_name}
 
@@ -587,7 +595,7 @@ def _build_worker_agents(
                 )
         else:
             # No filter — give builtins + lifecycle + MCP proxy (deferred)
-            agent_tools = list(BUILTIN_TOOLS) + list(AGENT_LIFECYCLE_TOOLS) + [find_tools, call_mcp_tool]
+            agent_tools = list(_builtin) + list(AGENT_LIFECYCLE_TOOLS) + [find_tools, call_mcp_tool]
 
         # Always ensure lifecycle tools are present even if not explicitly listed
         existing_names = {t.name for t in agent_tools}
@@ -1102,6 +1110,8 @@ async def build_graph(
     skill_configs: list | None = None,
     persona_files: dict[str, str] | None = None,
     engine_mode: bool = False,
+    disable_builtin_tools: bool = False,
+    builtin_tools_override: list | None = None,
 ) -> Any:
     """Build and compile the full Octi supervisor graph.
 
@@ -1226,6 +1236,8 @@ async def build_graph(
         octo_agents, mcp_tools,
         model_config=model_config,
         context_limits=context_limits,
+        disable_builtin_tools=disable_builtin_tools,
+        builtin_tools_override=builtin_tools_override,
     )
     deep_workers = _build_deep_agents(
         octo_agents, mcp_tools,
@@ -1337,8 +1349,14 @@ async def build_graph(
         _mem_tools = [write_memory, read_memories, update_long_term_memory]
         _plan_tools = [write_todos, read_todos, update_state_md]
 
+    if builtin_tools_override is not None:
+        _builtin = list(builtin_tools_override)
+    elif disable_builtin_tools:
+        _builtin = []
+    else:
+        _builtin = list(BUILTIN_TOOLS)
     supervisor_tool_list = (
-        list(BUILTIN_TOOLS)
+        _builtin
         + [find_tools, call_mcp_tool]
         + _plan_tools + [use_skill] + _mem_tools
         + _cli_only_tools

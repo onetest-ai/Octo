@@ -68,6 +68,8 @@ class OctoConfig:
     mcp_servers: dict = field(default_factory=dict)
     preloaded_tools: list = field(default_factory=list)
     skill_configs: list = field(default_factory=list)
+    disable_builtin_tools: bool = False  # When True, filesystem tools (Read/Grep/Glob/Edit/Bash) are excluded
+    builtin_tools_override: list | None = None  # When set, replaces BUILTIN_TOOLS entirely
 
     # --- System prompt ---
     system_prompt: str = ""

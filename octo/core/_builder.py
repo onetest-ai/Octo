@@ -169,6 +169,8 @@ async def _build_engine_graph_impl(config: Any) -> tuple[Any, Any]:
         skill_configs=skill_configs,
         persona_files=persona_files,
         engine_mode=True,
+        disable_builtin_tools=config.disable_builtin_tools,
+        builtin_tools_override=config.builtin_tools_override,
     )
     app = app_tuple[0]
 
