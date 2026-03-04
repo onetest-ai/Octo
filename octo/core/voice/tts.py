@@ -195,8 +195,29 @@ _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+|(?<=[\u3002\uff01\uff1f])")
 _CLAUSE_RE = re.compile(r"(?<=[,;\u3001\uff0c\uff1b])\s*")
 
 
-def chunk_text(text: str, max_chars: int = 200) -> list[str]:
-    """Split text into chunks at sentence boundaries."""
+def _split_by_words(text: str, max_chars: int) -> list[str]:
+    """Split text by word boundaries. Never cuts a word in half."""
+    words = text.split()
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip() if current else word
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = word
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def chunk_text(text: str, max_chars: int = 300) -> list[str]:
+    """Split text into chunks at natural boundaries.
+
+    Priority: sentences → clauses → words. Never splits mid-word.
+    """
     text = text.strip()
     if not text:
         return []
@@ -216,14 +237,15 @@ def chunk_text(text: str, max_chars: int = 200) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
+            # Try clause boundaries
             clauses = _CLAUSE_RE.split(sent)
             for clause in clauses:
                 clause = clause.strip()
                 if not clause:
                     continue
                 if len(clause) > max_chars:
-                    for i in range(0, len(clause), max_chars):
-                        chunks.append(clause[i : i + max_chars])
+                    # Split by words — never mid-word
+                    chunks.extend(_split_by_words(clause, max_chars))
                 elif current and len(current) + 1 + len(clause) > max_chars:
                     chunks.append(current)
                     current = clause
@@ -288,7 +310,7 @@ async def synthesize(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
-    max_chars: int = 200,
+    max_chars: int = 300,
 ) -> bytes:
     """Synthesize text to WAV bytes. Auto-chunks long text."""
     chunks = chunk_text(text, max_chars)
