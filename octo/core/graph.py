@@ -848,8 +848,15 @@ def _build_supervisor_prompt(
             "or `escalate_question` to ask the user something.\n\n"
             "The user is notified automatically when a task completes. They can check status "
             "with `/tasks` and view details with `/task <id>`.\n\n"
-            "Use background tasks when the user asks for large analysis, code generation, "
-            "research, or anything that would take several minutes."
+            "Use background tasks when the user asks for:\n"
+            "- Large analysis, code generation, or research\n"
+            "- **Audio/TTS generation** — especially long text narration, multi-voice synthesis, "
+            "or any speech generation that may exceed 2 minutes\n"
+            "- **Video generation** — video synthesis, lip-sync, image-to-video\n"
+            "- **Media workflows** — any pipeline combining TTS, images, and video\n"
+            "- Anything that would take several minutes\n\n"
+            "**IMPORTANT**: Media generation (TTS, video, workflows) can take 5-10+ minutes. "
+            "ALWAYS dispatch these as background tasks so the user isn't blocked."
         )
 
     # Project workers
