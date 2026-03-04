@@ -809,13 +809,16 @@ def _build_supervisor_prompt(
     # CLI-only capabilities (not available in engine/server mode)
     if not engine_mode:
         parts.append(
-            "## File Sharing\n\n"
+            "## File & Voice Sharing\n\n"
             "Use `send_file` to send files to the user via Telegram. This is much better "
             "than pasting long content inline. Use it when:\n"
             "- The user asks for a research report, analysis, or document\n"
             "- An agent has produced a file (research workspace: `.octo/workspace/<date>/`)\n"
             "- The content is too long to include in a message\n\n"
-            "If Telegram is not available, the tool returns the local file path instead."
+            "Use `send_voice` to send audio as a Telegram voice message (playable inline). "
+            "ALWAYS use this instead of send_file for audio content (TTS output, voice "
+            "recordings, etc.) — it plays as a voice bubble, not a file attachment.\n\n"
+            "If Telegram is not available, both tools return the local file path instead."
         )
 
         parts.append(
@@ -1273,8 +1276,8 @@ async def build_graph(
         from octo.background import make_dispatch_background_tool
         _cli_only_tools.append(make_dispatch_background_tool())
 
-        from octo.core.tools.telegram_tools import send_file
-        _cli_only_tools.append(send_file)
+        from octo.core.tools.telegram_tools import send_file, send_voice
+        _cli_only_tools.extend([send_file, send_voice])
 
     # Wrap supervisor tools in a TruncatingToolNode that:
     # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
