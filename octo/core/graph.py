@@ -821,6 +821,21 @@ def _build_supervisor_prompt(
             "If Telegram is not available, both tools return the local file path instead."
         )
 
+        try:
+            from octo.core.voice import is_available as _voice_ok
+            if _voice_ok():
+                parts.append(
+                    "## Voice Tools (Local TTS/STT)\n\n"
+                    "Use `generate_speech` for single-voice TTS. Pass `instruct` for emotion/style "
+                    "(e.g. \"Say it warmly\", \"Say it with excitement\").\n"
+                    "Use `generate_multi_voice_speech` for multi-voice dialogue — each segment gets "
+                    "its own voice and instruct.\n"
+                    "Use `transcribe_audio` for speech-to-text.\n"
+                    "All tools return file paths. Use `send_voice` to deliver audio via Telegram."
+                )
+        except ImportError:
+            pass
+
         parts.append(
             "## Task Scheduling\n\n"
             "You can schedule tasks to run later using `schedule_task`. Use this when:\n"
@@ -1284,6 +1299,15 @@ async def build_graph(
 
         from octo.core.tools.telegram_tools import send_file, send_voice
         _cli_only_tools.extend([send_file, send_voice])
+
+        # Voice tools (local TTS/STT — requires [voice] extra)
+        try:
+            from octo.core.voice import is_available
+            if is_available():
+                from octo.core.tools.voice_tools import VOICE_TOOLS
+                _cli_only_tools.extend(VOICE_TOOLS)
+        except ImportError:
+            pass
 
     # Wrap supervisor tools in a TruncatingToolNode that:
     # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
