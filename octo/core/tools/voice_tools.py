@@ -6,9 +6,61 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
+from datetime import date
+from pathlib import Path
 
 from langchain_core.tools import tool
+
+
+def _resolve_output_path(output_path: str | None, prefix: str) -> str:
+    """Resolve where to save audio: explicit path > workspace > temp."""
+    if output_path:
+        p = Path(output_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return str(p)
+
+    # Save to .octo/workspace/<date>/ by default
+    try:
+        from octo.config import RESEARCH_WORKSPACE
+        today = date.today().isoformat()
+        ws = RESEARCH_WORKSPACE / today
+        ws.mkdir(parents=True, exist_ok=True)
+        # Generate unique name
+        import uuid
+        return str(ws / f"{prefix}_{uuid.uuid4().hex[:8]}.wav")
+    except Exception:
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".wav", prefix=f"{prefix}_")
+        os.close(fd)
+        return path
+
+
+def _audio_info(path: str) -> str:
+    """Return human/AI-readable audio file summary."""
+    size = os.path.getsize(path)
+    if size < 1024:
+        size_str = f"{size} B"
+    elif size < 1024 * 1024:
+        size_str = f"{size / 1024:.1f} KB"
+    else:
+        size_str = f"{size / (1024 * 1024):.1f} MB"
+
+    # Try to get duration
+    duration_str = ""
+    try:
+        import soundfile as sf
+        info = sf.info(path)
+        secs = info.duration
+        mins = int(secs // 60)
+        remaining = secs - mins * 60
+        duration_str = f"{mins}m{remaining:.1f}s" if mins else f"{remaining:.1f}s"
+    except Exception:
+        pass
+
+    parts = [f"path: {path}", f"size: {size_str}"]
+    if duration_str:
+        parts.append(f"duration: {duration_str}")
+    return "Audio generated. " + ", ".join(parts)
 
 
 @tool
@@ -16,10 +68,13 @@ async def generate_speech(
     text: str,
     voice: str = "Aiden",
     instruct: str | None = None,
+    output_path: str | None = None,
 ) -> str:
     """Generate speech audio from text (TTS).
 
     Uses local Qwen3-TTS model. Automatically chunks long text.
+    Output is saved to .octo/workspace/<date>/ by default,
+    or to the specified output_path.
 
     Available voices: Aiden (English male), Ryan (English male),
     Vivian (Chinese female), Serena (Chinese female), Dylan (Chinese male),
@@ -34,9 +89,11 @@ async def generate_speech(
         voice: Voice name or alias.
         instruct: Emotion/style instruction (e.g. "Say it warmly",
                   "Say it with excitement"). Qwen3-TTS specific.
+        output_path: Where to save the WAV file. If not provided,
+                     saves to .octo/workspace/<today>/.
 
     Returns:
-        Path to the generated WAV audio file, or error message.
+        Audio file info: path, size, duration.
     """
     try:
         from octo.core.voice import is_available, local_synthesize
@@ -48,10 +105,10 @@ async def generate_speech(
 
     try:
         audio = await local_synthesize(text, voice=voice, instruct=instruct)
-        fd, path = tempfile.mkstemp(suffix=".wav", prefix="speech_")
-        os.write(fd, audio)
-        os.close(fd)
-        return path
+        path = _resolve_output_path(output_path, "speech")
+        with open(path, "wb") as f:
+            f.write(audio)
+        return _audio_info(path)
     except Exception as e:
         return f"TTS error: {e}"
 
@@ -60,11 +117,13 @@ async def generate_speech(
 async def generate_multi_voice_speech(
     segments: list | str,
     pause_ms: int = 300,
+    output_path: str | None = None,
 ) -> str:
     """Generate multi-voice speech with different voices for different parts.
 
     Each segment has its own voice and optional emotion instruction.
     Long segments are auto-chunked. Segments are concatenated with pauses.
+    Output is saved to .octo/workspace/<date>/ by default.
 
     Args:
         segments: List of objects, each with "text", "voice", and optional
@@ -74,9 +133,11 @@ async def generate_multi_voice_speech(
                     {"text": "Hi there!", "voice": "Vivian", "instruct": "Say it warmly"}
                   ]
         pause_ms: Milliseconds of silence between segments (default 300).
+        output_path: Where to save the WAV file. If not provided,
+                     saves to .octo/workspace/<today>/.
 
     Returns:
-        Path to the generated WAV audio file, or error message.
+        Audio file info: path, size, duration.
     """
     try:
         from octo.core.voice import is_available, local_synthesize_multi
@@ -98,10 +159,10 @@ async def generate_multi_voice_speech(
 
     try:
         audio = await local_synthesize_multi(segments, pause_ms=pause_ms)
-        fd, path = tempfile.mkstemp(suffix=".wav", prefix="multi_speech_")
-        os.write(fd, audio)
-        os.close(fd)
-        return path
+        path = _resolve_output_path(output_path, "multi_speech")
+        with open(path, "wb") as f:
+            f.write(audio)
+        return _audio_info(path)
     except Exception as e:
         return f"Multi-voice TTS error: {e}"
 

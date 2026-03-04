@@ -830,8 +830,12 @@ def _build_supervisor_prompt(
                     "(e.g. \"Say it warmly\", \"Say it with excitement\").\n"
                     "Use `generate_multi_voice_speech` for multi-voice dialogue — each segment gets "
                     "its own voice and instruct.\n"
-                    "Use `transcribe_audio` for speech-to-text.\n"
-                    "All tools return file paths. Use `send_voice` to deliver audio via Telegram."
+                    "Use `transcribe_audio` for speech-to-text.\n\n"
+                    "Audio files are saved to `.octo/workspace/<date>/` by default. "
+                    "Pass `output_path` to save to a specific location (e.g. "
+                    "`.octo/workspace/2026-03-04/my-project/episode.wav`).\n"
+                    "Tools return file info (path, size, duration). "
+                    "Use `send_voice` to deliver audio via Telegram."
                 )
         except ImportError:
             pass
