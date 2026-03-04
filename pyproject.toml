@@ -1,6 +1,6 @@
 [project]
 name = "octo-agent"
-version = "0.8.8"
+version = "0.9.0"
 description = "AI agent engine — embeddable LangGraph supervisor with multi-agent orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -60,9 +60,17 @@ postgres = [
     "langgraph-checkpoint-postgres>=0.1",
     "asyncpg>=0.29",
 ]
+# Local voice engine (Qwen3-TTS + MLX Whisper)
+voice = [
+    "torch>=2.0",
+    "qwen_tts",
+    "mlx-whisper",
+    "soundfile",
+    "numpy",
+]
 # Everything (current full experience)
 all = [
-    "octo-agent[cli,telegram,s3,postgres]",
+    "octo-agent[cli,telegram,s3,postgres,voice]",
 ]
 
 [project.scripts]

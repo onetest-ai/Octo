@@ -1,10 +1,8 @@
-"""Voice module — multi-engine STT/TTS with voiceover text preparation.
+"""Voice module — local TTS/STT (Qwen3-TTS + Whisper) with ElevenLabs fallback.
 
-Engines:
-  STT: Sirens (local, default) or ElevenLabs (cloud)
-  TTS: Sirens (local, default) or ElevenLabs (cloud)
-
-Sirens is an OpenAI-compatible local media proxy (http://localhost:8555).
+Engines (auto-detected):
+  1. Local — requires octo-agent[voice] extra (torch, qwen_tts, mlx-whisper)
+  2. ElevenLabs — requires ELEVENLABS_API_KEY
 """
 from __future__ import annotations
 
@@ -26,6 +24,30 @@ _TTS_MODEL = "eleven_flash_v2_5"
 _STT_MODEL = "scribe_v1"
 _OUTPUT_FORMAT = "mp3_44100_128"
 
+# ── Local engine availability (lazy) ─────────────────────────────────
+_local_available: bool | None = None
+
+
+def _has_local_voice() -> bool:
+    global _local_available
+    if _local_available is None:
+        try:
+            from octo.core.voice import is_available
+            _local_available = is_available()
+        except ImportError:
+            _local_available = False
+    return _local_available
+
+
+def _active_engine() -> str:
+    """Return 'local', 'elevenlabs', or 'none'."""
+    if _has_local_voice():
+        return "local"
+    from octo.config import ELEVENLABS_API_KEY
+    if ELEVENLABS_API_KEY:
+        return "elevenlabs"
+    return "none"
+
 
 # ── Public API ───────────────────────────────────────────────────────
 
@@ -45,62 +67,112 @@ def is_enabled() -> bool:
 
 def engine_info() -> dict[str, str]:
     """Return current engine configuration for /voice status."""
-    from octo.config import VOICE_STT_ENGINE, VOICE_TTS_ENGINE
-    from octo.core.tools.mcp_proxy import get_mcp_tool
-
-    stt = VOICE_STT_ENGINE.lower()
-    tts = VOICE_TTS_ENGINE.lower()
-    if stt == "elevenlabs":
-        from octo.config import ELEVENLABS_API_KEY
-        stt_ready = bool(ELEVENLABS_API_KEY)
-    else:
-        stt_ready = get_mcp_tool("transcribe_audio") is not None
-    if tts == "elevenlabs":
-        from octo.config import ELEVENLABS_API_KEY
-        tts_ready = bool(ELEVENLABS_API_KEY)
-    else:
-        tts_ready = get_mcp_tool("generate_speech") is not None
+    engine = _active_engine()
+    if engine == "local":
+        # Check STT separately (may not have mlx-whisper installed)
+        try:
+            from octo.core.voice.stt import _detect_backend
+            stt_backend = _detect_backend()
+            stt_ready = True
+        except ImportError:
+            stt_backend = "none"
+            stt_ready = False
+        return {
+            "tts": "local (Qwen3-TTS)",
+            "stt": f"local ({stt_backend})" if stt_ready else "unavailable",
+            "tts_ready": "True",
+            "stt_ready": str(stt_ready),
+        }
+    if engine == "elevenlabs":
+        return {
+            "tts": "elevenlabs",
+            "stt": "elevenlabs",
+            "tts_ready": "True",
+            "stt_ready": "True",
+        }
     return {
-        "stt": stt,
-        "tts": tts,
-        "stt_ready": str(stt_ready),
-        "tts_ready": str(tts_ready),
+        "tts": "unavailable",
+        "stt": "unavailable",
+        "tts_ready": "False",
+        "stt_ready": "False",
     }
 
 
 async def transcribe(audio_data: bytes) -> str:
-    """Transcribe audio bytes to text using the configured STT engine.
+    """Transcribe audio bytes to text.
 
     Returns transcribed text, or empty string on failure.
     """
-    from octo.config import VOICE_STT_ENGINE
-    engine = VOICE_STT_ENGINE.lower()
+    engine = _active_engine()
 
-    if engine == "elevenlabs":
+    if engine == "local":
+        try:
+            from octo.core.voice import local_transcribe
+            return await local_transcribe(audio_data)
+        except ImportError:
+            logger.warning("Local STT deps not installed (mlx-whisper/faster-whisper)")
+        except Exception:
+            logger.exception("Local STT error")
+
+    if engine == "elevenlabs" or _active_engine() != "none":
         return await _transcribe_elevenlabs(audio_data)
-    return await _transcribe_sirens(audio_data)
+
+    return ""
 
 
-async def synthesize(text: str, prep: bool = True) -> bytes | None:
-    """Convert text to audio bytes using the configured TTS engine.
+async def synthesize(
+    text: str,
+    voice: str = "Aiden",
+    instruct: str | None = None,
+    prep: bool = True,
+) -> bytes | None:
+    """Convert text to audio bytes.
 
     Args:
         text: Text to synthesize.
-        prep: If True, run voiceover text preparation (LLM rewrite)
-              before synthesis. Set False for pre-prepared text
-              (e.g. video production scripts).
+        voice: Voice name (Qwen3-TTS speaker or OpenAI alias).
+        instruct: Emotion/style instruction (e.g. "Say it warmly").
+        prep: If True, run voiceover text preparation before synthesis.
 
-    Returns audio bytes (mp3 or wav), or None on failure.
+    Returns audio bytes (WAV or mp3), or None on failure.
     """
     if prep:
         text = await prepare_for_voice(text)
 
-    from octo.config import VOICE_TTS_ENGINE
-    engine = VOICE_TTS_ENGINE.lower()
+    engine = _active_engine()
+
+    if engine == "local":
+        try:
+            from octo.core.voice import local_synthesize
+            return await local_synthesize(text, voice=voice, instruct=instruct)
+        except Exception:
+            logger.exception("Local TTS error")
+            return None
 
     if engine == "elevenlabs":
         return await _synthesize_elevenlabs(text)
-    return await _synthesize_sirens(text)
+
+    return None
+
+
+async def synthesize_multi(
+    segments: list[dict],
+    pause_ms: int = 300,
+) -> bytes | None:
+    """Multi-voice synthesis. Each segment: {text, voice, instruct?}.
+
+    Only available with local engine (Qwen3-TTS).
+    """
+    if not _has_local_voice():
+        logger.warning("Multi-voice requires local voice engine (octo-agent[voice])")
+        return None
+
+    try:
+        from octo.core.voice import local_synthesize_multi
+        return await local_synthesize_multi(segments, pause_ms=pause_ms)
+    except Exception:
+        logger.exception("Multi-voice TTS error")
+        return None
 
 
 async def speak(text: str) -> None:
@@ -108,17 +180,9 @@ async def speak(text: str) -> None:
     if not _enabled:
         return
 
-    from octo.config import VOICE_TTS_ENGINE
-    engine = VOICE_TTS_ENGINE.lower()
-
-    if engine == "elevenlabs":
-        from octo.config import ELEVENLABS_API_KEY
-        if not ELEVENLABS_API_KEY:
-            return
-    else:
-        from octo.core.tools.mcp_proxy import get_mcp_tool
-        if not get_mcp_tool("generate_speech"):
-            return
+    engine = _active_engine()
+    if engine == "none":
+        return
 
     audio = await synthesize(text, prep=True)
     if not audio:
@@ -160,57 +224,6 @@ async def prepare_for_voice(text: str) -> str:
     except Exception:
         logger.debug("Voiceover prep failed, using raw text", exc_info=True)
         return text
-
-
-# ── Sirens engines (via MCP) ──────────────────────────────────────────
-
-async def _transcribe_sirens(audio_data: bytes) -> str:
-    """Transcribe via Sirens MCP tool (transcribe_audio)."""
-    from octo.core.tools.mcp_proxy import invoke_mcp_tool
-
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(suffix=".ogg")
-        os.write(fd, audio_data)
-        os.close(fd)
-        result = await invoke_mcp_tool("transcribe_audio", {"file_path": tmp})
-        return result or ""
-    except Exception:
-        logger.exception("Sirens STT error")
-        return ""
-    finally:
-        if tmp:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-
-async def _synthesize_sirens(text: str) -> bytes | None:
-    """Synthesize via Sirens MCP tool (generate_speech)."""
-    from pathlib import Path
-
-    from octo.config import SIRENS_VOICE
-    from octo.core.tools.mcp_proxy import invoke_mcp_tool
-
-    try:
-        result = await invoke_mcp_tool("generate_speech", {
-            "text": text[:5000],
-            "voice": SIRENS_VOICE,
-            "response_format": "wav",
-        })
-        if not result:
-            return None
-        p = Path(result)
-        if not p.is_file():
-            logger.warning("TTS output file not found: %s", result)
-            return None
-        audio = p.read_bytes()
-        p.unlink(missing_ok=True)
-        return audio
-    except Exception:
-        logger.exception("Sirens TTS error")
-        return None
 
 
 # ── ElevenLabs engines ───────────────────────────────────────────────

@@ -304,12 +304,8 @@ VP_ACTIVE_END_TIME = _parse_time_str(VP_ACTIVE_END)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 
-# Engine selection: "sirens" (local media proxy) or "elevenlabs" (cloud)
-VOICE_STT_ENGINE = os.getenv("VOICE_STT_ENGINE", "sirens")
-VOICE_TTS_ENGINE = os.getenv("VOICE_TTS_ENGINE", "sirens")
-
-# Sirens voice preference (used by voice.py via MCP)
-SIRENS_VOICE = os.getenv("SIRENS_VOICE", "af_heart")
+# Optional: path to pre-downloaded voice models (HF cache used if empty)
+VOICE_MODEL_DIR = os.getenv("VOICE_MODEL_DIR", "")
 
 
 # --- Project registry ---

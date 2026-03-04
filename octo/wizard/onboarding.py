@@ -430,13 +430,11 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
         ("Telegram", "Optional Telegram bot integration", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_OWNER_ID"]),
         (
             "Voice",
-            "STT/TTS engine selection + credentials\n"
-            "# STT: elevenlabs (cloud) or whisper (local command)\n"
-            "# TTS: elevenlabs (cloud) or kokoro (local command)",
+            "Local voice: pip install octo-agent[voice]\n"
+            "# Cloud fallback: set ELEVENLABS_API_KEY",
             [
-                "VOICE_STT_ENGINE", "VOICE_TTS_ENGINE",
                 "ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID",
-                "WHISPER_COMMAND", "KOKORO_COMMAND",
+                "VOICE_MODEL_DIR",
             ],
         ),
     ]
