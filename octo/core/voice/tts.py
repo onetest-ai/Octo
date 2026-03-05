@@ -253,8 +253,8 @@ def _synthesize_sync(
     if speaker not in _SPEAKERS:
         speaker = "Aiden"
 
-    # Language: explicit > detected from text (Russian/English only)
-    lang = language if language else _detect_language(text)
+    # Always autodetect language from text content — LLMs often pass wrong value
+    lang = _detect_language(text)
 
     # Select gen kwargs: cross-lingual needs tighter params
     native = _NATIVE_LANG.get(speaker, "English")
@@ -298,7 +298,20 @@ def _synthesize_sync(
             )
             audio = audio[boundary:]
         else:
-            logger.warning("Could not find sacrifice boundary — audio may have prefix")
+            # Boundary not found — regenerate without sacrifice prefix
+            logger.warning("Sacrifice boundary not found, regenerating without prefix")
+            torch.manual_seed(_VOICE_SEED)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(_VOICE_SEED)
+            gen_kwargs["max_new_tokens"] = _estimate_max_tokens(text)
+            wavs2, sr = model.generate_custom_voice(
+                text=text,
+                language=lang,
+                speaker=speaker,
+                instruct=instruct or "",
+                **gen_kwargs,
+            )
+            audio = wavs2[0]
 
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
