@@ -97,6 +97,21 @@ def _resolve_model_path() -> str:
     return _DEFAULT_MODEL
 
 
+def _resolve_cache_dir() -> str | None:
+    """Resolve HF cache dir: .octo/models/parler-tts/ if it exists."""
+    # Check common .octo/models locations
+    for base in (
+        os.environ.get("OCTO_DIR"),
+        os.path.expanduser("~/.octo"),
+        ".octo",
+    ):
+        if base:
+            cache = os.path.join(base, "models", "parler-tts")
+            if os.path.isdir(cache):
+                return cache
+    return None
+
+
 def _get_model():
     """Lazy-load ParlerTTS model + tokenizers (singleton)."""
     global _model, _tokenizer, _desc_tokenizer, _model_id
@@ -119,13 +134,17 @@ def _get_model():
         device = "cpu"
         dtype = torch.float32
 
+    cache_dir = _resolve_cache_dir()
+    if cache_dir:
+        logger.info("Using model cache: %s", cache_dir)
+
     logger.info("Loading ParlerTTS: %s on %s (%s)", model_id, device, dtype)
     _model = ParlerTTSForConditionalGeneration.from_pretrained(
-        model_id, torch_dtype=dtype,
+        model_id, torch_dtype=dtype, cache_dir=cache_dir,
     ).to(device)
-    _tokenizer = AutoTokenizer.from_pretrained(model_id)
+    _tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
     _desc_tokenizer = AutoTokenizer.from_pretrained(
-        _model.config.text_encoder._name_or_path,
+        _model.config.text_encoder._name_or_path, cache_dir=cache_dir,
     )
     _model_id = model_id
     return _model, _tokenizer, _desc_tokenizer

@@ -1,6 +1,6 @@
 [project]
 name = "octo-agent"
-version = "0.9.19"
+version = "0.9.20"
 description = "AI agent engine — embeddable LangGraph supervisor with multi-agent orchestration"
 readme = "README.md"
 requires-python = ">=3.11"
