@@ -77,8 +77,9 @@ _GEN_KWARGS_CROSS_LINGUAL = {
     "subtalker_top_p": 0.8,
 }
 
-# Max window to search for artifact boundary (ms). Artifact is typically 30-150ms.
-_ARTIFACT_SEARCH_MS = 250
+# Sacrificial prefix for cross-lingual: absorbs the CJK phoneme bleed.
+# Must end with sentence boundary (period) so there's a detectable pause.
+_SACRIFICE_PREFIX = "One moment please."
 
 _VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
@@ -161,72 +162,60 @@ def _detect_language(text: str) -> str:
 
 # ── Synchronous synthesis ────────────────────────────────────────────
 
-def _trim_cross_lingual_artifact(audio, sr: int) -> tuple:
-    """Detect and trim the leading phoneme artifact in cross-lingual audio.
+def _find_sacrifice_boundary(audio, sr: int) -> int:
+    """Find the silence gap after the sacrificial prefix.
 
-    The artifact is a short CJK phoneme burst (30-150ms) followed by an
-    energy dip before real speech. We find the dip by computing short-time
-    energy in 10ms windows over the first 250ms, then cut at the minimum.
+    Scans the audio for a silence region (energy below threshold) that
+    marks the pause between the sacrifice phrase and the real text.
+    Starts searching after 300ms (prefix is at least that long) and
+    looks for consecutive low-energy windows.
 
-    Returns (trimmed_audio, trim_ms) — trim_ms=0 if no artifact detected.
+    Returns sample index to trim at, or 0 if no boundary found.
     """
     import numpy as np
 
-    search_samples = int(sr * _ARTIFACT_SEARCH_MS / 1000)
-    if len(audio) < search_samples * 2:
-        return audio, 0
-
     window_ms = 10
     window_samples = int(sr * window_ms / 1000)
-    search_region = audio[:search_samples]
+    # Search between 300ms and 3s (sacrifice is ~1s speech)
+    start_sample = int(sr * 0.3)
+    end_sample = min(int(sr * 3.0), len(audio) // 2)
 
-    # Compute RMS energy per window
-    n_windows = len(search_region) // window_samples
-    if n_windows < 3:
-        return audio, 0
+    if end_sample <= start_sample:
+        return 0
+
+    region = audio[start_sample:end_sample]
+    n_windows = len(region) // window_samples
+    if n_windows < 5:
+        return 0
 
     energy = np.array([
-        np.sqrt(np.mean(search_region[i * window_samples:(i + 1) * window_samples] ** 2))
+        np.sqrt(np.mean(region[i * window_samples:(i + 1) * window_samples] ** 2))
         for i in range(n_windows)
     ])
 
-    # Need an initial energy burst (artifact) followed by a dip
-    # Skip leading silence: find first window above 10% of max energy
-    max_e = energy.max()
-    if max_e < 1e-6:
-        return audio, 0
+    # Threshold: 5% of median energy (silence is well below speech)
+    median_e = np.median(energy[energy > 0]) if np.any(energy > 0) else 0
+    if median_e < 1e-6:
+        return 0
+    silence_threshold = median_e * 0.05
 
-    threshold = max_e * 0.1
-    onset = 0
+    # Find first run of 3+ consecutive silent windows (≥30ms silence)
+    consecutive = 0
     for i in range(n_windows):
-        if energy[i] > threshold:
-            onset = i
-            break
+        if energy[i] < silence_threshold:
+            consecutive += 1
+            if consecutive >= 3:
+                # Found silence gap — trim to end of silence
+                silence_end = i + 1
+                # Skip any remaining silence
+                while silence_end < n_windows and energy[silence_end] < silence_threshold:
+                    silence_end += 1
+                trim_sample = start_sample + silence_end * window_samples
+                return trim_sample
+        else:
+            consecutive = 0
 
-    # From onset, find the energy minimum (the dip between artifact and speech)
-    # Search at least 2 windows past onset, up to end of search region
-    search_start = onset + 2
-    if search_start >= n_windows:
-        return audio, 0
-
-    dip_idx = search_start + np.argmin(energy[search_start:])
-
-    # Validate: the dip should be noticeably lower than the artifact peak
-    artifact_peak = energy[onset:search_start].max() if search_start > onset else 0
-    dip_energy = energy[dip_idx]
-
-    if artifact_peak < 1e-6 or dip_energy > artifact_peak * 0.5:
-        # No clear dip — artifact not detected or it's just normal speech
-        return audio, 0
-
-    # Cut at the dip point
-    trim_sample = dip_idx * window_samples
-    trim_ms = dip_idx * window_ms
-
-    logger.debug("Cross-lingual artifact trimmed: %dms (dip energy %.4f vs peak %.4f)",
-                 trim_ms, dip_energy, artifact_peak)
-
-    return audio[trim_sample:], trim_ms
+    return 0
 
 
 def _estimate_max_tokens(text: str) -> int:
@@ -276,10 +265,16 @@ def _synthesize_sync(
     else:
         gen_kwargs = dict(_GEN_KWARGS)
 
-    gen_kwargs["max_new_tokens"] = _estimate_max_tokens(text)
+    # Cross-lingual: prepend sacrificial phrase to absorb CJK phoneme bleed.
+    # The artifact bleeds into the sacrifice instead of the real text.
+    synth_text = text
+    if is_cross_lingual:
+        synth_text = f"{_SACRIFICE_PREFIX} {text}"
+
+    gen_kwargs["max_new_tokens"] = _estimate_max_tokens(synth_text)
 
     wavs, sr = model.generate_custom_voice(
-        text=text,
+        text=synth_text,
         language=lang,
         speaker=speaker,
         instruct=instruct or "",
@@ -288,11 +283,18 @@ def _synthesize_sync(
 
     audio = wavs[0]
 
-    # Smart trim: detect and remove leading CJK phoneme artifact
+    # Trim the sacrificial prefix by finding the silence gap after it
     if is_cross_lingual:
-        audio, trim_ms = _trim_cross_lingual_artifact(audio, sr)
-        if trim_ms:
-            logger.info("Trimmed %dms artifact from %s speaking %s", trim_ms, speaker, lang)
+        boundary = _find_sacrifice_boundary(audio, sr)
+        if boundary > 0:
+            trim_ms = int(boundary / sr * 1000)
+            logger.info(
+                "Trimmed %dms sacrifice prefix from %s speaking %s",
+                trim_ms, speaker, lang,
+            )
+            audio = audio[boundary:]
+        else:
+            logger.warning("Could not find sacrifice boundary — audio may have prefix")
 
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
