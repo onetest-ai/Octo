@@ -80,6 +80,22 @@ def auth_cmd(action: str, server_name: str | None) -> None:
     asyncio.run(handle_auth(action, server_name))
 
 
+@main.command(name="resume")
+@click.argument("session_id", required=False, default="")
+@click.option("--model", default="", help="Model override")
+@click.option("--verbose", is_flag=True, help="Verbose output")
+@click.option("--debug", is_flag=True, help="Debug output (show LLM calls)")
+@click.option("--voice", is_flag=True, help="Enable TTS")
+@click.option("--no-telegram", is_flag=True, help="Disable Telegram bot")
+@click.pass_context
+def resume_cmd(ctx: click.Context, session_id: str, **kwargs) -> None:
+    """Resume a previous session. Without arguments, resumes the last session."""
+    if session_id:
+        ctx.invoke(chat, thread=session_id, **kwargs)
+    else:
+        ctx.invoke(chat, resume=True, **kwargs)
+
+
 # --- Skills marketplace subcommand ---
 from octo.skills_cli import skills as skills_group
 main.add_command(skills_group)
@@ -107,6 +123,20 @@ async def _chat_loop(
     from octo.sessions import save_session, get_last_session
     from octo.telegram import TelegramTransport
     from octo import voice as voice_mod
+
+    # Install force-kill handler inside the async loop (asyncio.run overrides
+    # the one set in the sync wrapper).  Double Ctrl+C within 3s → os._exit.
+    import signal, time as _sig_time, os as _sig_os
+    _last_sigint_inner = [0.0]
+
+    def _inner_sigint(signum, frame):
+        now = _sig_time.monotonic()
+        if now - _last_sigint_inner[0] < 3.0:
+            _sig_os._exit(130)
+        _last_sigint_inner[0] = now
+        signal.default_int_handler(signum, frame)
+
+    signal.signal(signal.SIGINT, _inner_sigint)
 
     # Setup logging
     logging.basicConfig(
@@ -311,6 +341,28 @@ async def _chat_loop(
                 )
             else:
                 ui.print_status("Telegram bot connected", "green")
+        
+        # Check for restart marker and send "I'm back" notification
+        if tg:
+            import time
+            import json
+            from pathlib import Path
+            marker_path = Path.home() / ".octo" / ".restart_marker"
+            if marker_path.exists():
+                try:
+                    marker_data = json.loads(marker_path.read_text())
+                    # Check if marker is recent (within 5 minutes) and matches current thread
+                    if (time.time() - marker_data.get("timestamp", 0) < 300 and 
+                        marker_data.get("thread_id") == thread_id):
+                        restart_label = marker_data.get("label", "Restarting")
+                        await tg.send_proactive(
+                            f"🐙 **I'm back!** {restart_label} completed successfully.",
+                            source="System"
+                        )
+                    marker_path.unlink()  # Remove marker after check
+                except Exception as e:
+                    logger.debug(f"Failed to process restart marker: {e}")
+        
         config = {
             "configurable": {"thread_id": thread_id},
             "callbacks": callbacks,
@@ -532,18 +584,21 @@ async def _chat_loop(
             """
             import sys as _sys
             import os as _os
+            import time
+            import json
             save_session(thread_id, model=active_model)
             ui.print_info(f"{label} Octo (session {thread_id})...")
-            await heartbeat.stop()
-            await cron_scheduler.stop()
-            await _worker_pool.shutdown()
-            if swarm_runner is not None:
-                await swarm_runner.stop()
-            if vp_poller is not None:
-                vp_poller.stop()
-            if tg:
-                await tg.stop()
-            await session_pool.close_all()
+            
+            # Write restart marker for "I'm back" notification
+            from pathlib import Path
+            marker_path = Path.home() / ".octo" / ".restart_marker"
+            marker_path.parent.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(json.dumps({
+                "thread_id": thread_id,
+                "timestamp": time.time(),
+                "label": label
+            }))
+
             restart_args = [_sys.executable, "-m", "octo", "chat",
                             "--thread", thread_id]
             if verbose:
@@ -554,6 +609,24 @@ async def _chat_loop(
                 restart_args.append("--voice")
             if no_telegram:
                 restart_args.append("--no-telegram")
+
+            async def _shutdown_subsystems() -> None:
+                await heartbeat.stop()
+                await cron_scheduler.stop()
+                await _worker_pool.shutdown()
+                if swarm_runner is not None:
+                    await swarm_runner.stop()
+                if vp_poller is not None:
+                    vp_poller.stop()
+                if tg:
+                    await tg.stop()
+                await session_pool.close_all()
+
+            try:
+                await asyncio.wait_for(_shutdown_subsystems(), timeout=10.0)
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.warning("Shutdown timed out or errored (%s), forcing restart", exc)
+
             _os.execv(_sys.executable, restart_args)
 
         async def _tg_command_handler(cmd: str, args: str) -> str | None:
@@ -2067,6 +2140,12 @@ async def _chat_loop(
                             if voice_mod.is_enabled():
                                 await voice_mod.speak(response_text)
 
+                        # Check if the agent requested a restart
+                        from octo.core.tools.lifecycle import is_restart_requested, clear_restart_flag
+                        if is_restart_requested():
+                            clear_restart_flag()
+                            await _graceful_restart(label="Restarting (agent-requested)")
+
                 except KeyboardInterrupt:
                     import time as _time
                     _now = _time.monotonic()
@@ -2089,24 +2168,33 @@ async def _chat_loop(
                         logger.exception("Graph invocation error")
 
         finally:
-            await heartbeat.stop()
-            await cron_scheduler.stop()
-            await _worker_pool.shutdown()
-            if swarm_runner is not None:
-                await swarm_runner.stop()
-            if vp_poller is not None:
-                vp_poller.stop()
-            if tg:
-                await tg.stop()
-            # Flush Langfuse before exit to prevent hanging threads
-            if LANGFUSE_ENABLED:
-                try:
-                    from langfuse import Langfuse
-                    Langfuse().flush()
-                    Langfuse().shutdown()
-                except Exception:
-                    pass
+            async def _final_cleanup() -> None:
+                await heartbeat.stop()
+                await cron_scheduler.stop()
+                await _worker_pool.shutdown()
+                if swarm_runner is not None:
+                    await swarm_runner.stop()
+                if vp_poller is not None:
+                    vp_poller.stop()
+                if tg:
+                    await tg.stop()
+                # Flush Langfuse before exit to prevent hanging threads
+                if LANGFUSE_ENABLED:
+                    try:
+                        from langfuse import Langfuse
+                        Langfuse().flush()
+                        Langfuse().shutdown()
+                    except Exception:
+                        pass
+
+            try:
+                await asyncio.wait_for(_final_cleanup(), timeout=8.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as exc:
+                logger.debug("Cleanup timed out or failed: %s", exc)
             ui.print_info("Goodbye!")
 
     finally:
-        await session_pool.close_all()
+        try:
+            await asyncio.wait_for(session_pool.close_all(), timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            pass

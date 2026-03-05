@@ -19,12 +19,19 @@ _mcp_tool_registry: dict[str, Any] = {}
 _mcp_server_summaries: list[dict[str, str]] = []
 _tool_to_server: dict[str, str] = {}  # reverse index: tool_name → server_name
 _session_pool: Any = None  # MCPSessionPool ref, set from cli.py
+_direct_tools: list[Any] = []  # lifecycle + builtin tools bound directly to agents
 
 
 def set_session_pool(pool: Any) -> None:
     """Register the MCPSessionPool for auto-reconnect on session errors."""
     global _session_pool
     _session_pool = pool
+
+
+def register_direct_tools(tools: list[Any]) -> None:
+    """Register lifecycle/builtin tools so find_tools() can discover them."""
+    _direct_tools.clear()
+    _direct_tools.extend(tools)
 
 
 def get_mcp_tool(name: str) -> Any | None:
@@ -103,14 +110,19 @@ def register_mcp_tools(tools_by_server: dict[str, list]) -> None:
 
 @tool
 def find_tools(query: str) -> str:
-    """Search available MCP tools by keyword. Returns matching tool names,
-    descriptions, and parameter schemas. Use call_mcp_tool() to execute.
+    """Search available tools by keyword. Returns matching tool names,
+    descriptions, and parameter schemas.
+
+    MCP tools must be called via call_mcp_tool(). Direct tools (lifecycle,
+    builtins) should be called directly by name.
 
     Args:
-        query: Search keyword (e.g. 'github issues', 'search', 'calendar')
+        query: Search keyword (e.g. 'github issues', 'search', 'restart')
     """
     words = query.lower().split()
     scored: list[tuple[int, dict]] = []
+
+    # Search MCP tools
     for name, t in _mcp_tool_registry.items():
         desc = t.description or ""
         haystack = f"{name.lower()} {desc.lower()}"
@@ -127,6 +139,28 @@ def find_tools(query: str) -> str:
             "name": name,
             "description": desc[:200],
             "parameters": schema,
+            "call_via": "call_mcp_tool",
+        }))
+
+    # Search direct tools (lifecycle + builtins)
+    for t in _direct_tools:
+        name = t.name
+        desc = t.description or ""
+        haystack = f"{name.lower()} {desc.lower()}"
+        hits = sum(1 for w in words if w in haystack)
+        if hits == 0:
+            continue
+        schema: dict = {}
+        if hasattr(t, "args_schema") and t.args_schema:
+            try:
+                schema = t.args_schema.model_json_schema()
+            except Exception:
+                pass
+        scored.append((hits, {
+            "name": name,
+            "description": desc[:200],
+            "parameters": schema,
+            "call_via": "direct (call by name, NOT via call_mcp_tool)",
         }))
 
     scored.sort(key=lambda x: x[0], reverse=True)

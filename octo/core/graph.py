@@ -38,6 +38,7 @@ from octo.core.tools.memory import (
 from octo.core.tools.mcp_proxy import (
     find_tools, call_mcp_tool,
     register_mcp_tools as _register_mcp_tools,
+    register_direct_tools as _register_direct_tools,
     get_mcp_tool, set_session_pool,
     get_mcp_server_summaries,
     build_tool_catalog,
@@ -1184,6 +1185,7 @@ async def build_graph(
     """
     mcp_tools = mcp_tools or []
     _register_mcp_tools(mcp_tools_by_server or {})
+    _register_direct_tools(list(BUILTIN_TOOLS) + list(AGENT_LIFECYCLE_TOOLS))
 
     # Load agents — use pre-loaded configs if provided (engine mode),
     # otherwise scan filesystem (CLI mode).
@@ -1317,6 +1319,9 @@ async def build_graph(
         except ImportError:
             pass
 
+        from octo.core.tools.lifecycle import request_restart
+        _cli_only_tools.append(request_restart)
+
     # Wrap supervisor tools in a TruncatingToolNode that:
     # 1. handle_tool_errors=True — MCP errors returned as messages, not crashes
     # 2. Truncates oversized results (e.g. search_code returning 73K chars)
@@ -1406,6 +1411,7 @@ async def build_graph(
     supervisor_tool_list = (
         _builtin
         + [find_tools, call_mcp_tool]
+        + list(AGENT_LIFECYCLE_TOOLS)
         + _plan_tools + [use_skill] + _mem_tools
         + _cli_only_tools
     )

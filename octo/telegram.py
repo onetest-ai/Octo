@@ -475,6 +475,14 @@ class TelegramTransport:
             stop_typing.set()
             await typing_task
 
+    async def _check_restart_requested(self) -> None:
+        """If the agent called request_restart, trigger a restart via on_command."""
+        from octo.core.tools.lifecycle import is_restart_requested, clear_restart_flag
+        if is_restart_requested():
+            clear_restart_flag()
+            if self.on_command:
+                await self.on_command("restart", "")
+
     async def _reply(self, update: Update, response_text: str, voice_reply: bool = False) -> None:
         """Send response as formatted HTML (always) and optionally as voice."""
         if not response_text:
@@ -602,6 +610,7 @@ class TelegramTransport:
             except Exception:
                 pass
             await self._reply(update, response_text)
+            await self._check_restart_requested()
 
         except Exception:
             logger.exception("Error handling Telegram document")
@@ -673,6 +682,7 @@ class TelegramTransport:
             except Exception:
                 pass
             await self._reply(update, response_text)
+            await self._check_restart_requested()
         except Exception as e:
             error_str = str(e).lower()
             if "timeout" in error_str or "timed out" in error_str:
@@ -923,6 +933,7 @@ class TelegramTransport:
             except Exception:
                 pass
             await self._reply(update, response_text, voice_reply=True)
+            await self._check_restart_requested()
 
         except Exception:
             logger.exception("Error handling Telegram voice message")
