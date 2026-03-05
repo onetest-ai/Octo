@@ -61,10 +61,11 @@ postgres = [
     "asyncpg>=0.29",
 ]
 # Local voice engine (ParlerTTS + MLX Whisper)
+# ParlerTTS only works with transformers==4.46.1 — pin it explicitly
 voice = [
     "torch>=2.0",
     "parler_tts @ git+https://github.com/huggingface/parler-tts.git",
-    "transformers>=4.36",
+    "transformers==4.46.1",
     "mlx-whisper",
     "soundfile",
     "numpy",
