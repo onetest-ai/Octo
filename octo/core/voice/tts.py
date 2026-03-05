@@ -308,19 +308,37 @@ async def synthesize_multi(
 ) -> bytes:
     """Multi-voice synthesis. Each segment: {text, voice, instruct?}.
 
-    Auto-chunks long segments. Concatenates with silence between segments.
+    Auto-chunks long segments. Groups by voice for consistent timbre
+    (all segments for one voice generated together before switching).
+    Concatenates in original order with silence between segments.
     """
     if not segments:
         return b""
 
-    wav_parts: list[bytes] = []
-    for seg in segments:
-        wav = await synthesize(
-            text=seg["text"],
-            voice=seg.get("voice", "Ryan"),
-            instruct=seg.get("instruct"),
-            language=seg.get("language"),
-        )
-        wav_parts.append(wav)
+    # Group segment indices by resolved voice key (name + instruct)
+    from collections import defaultdict
 
+    voice_groups: dict[tuple[str, str | None], list[int]] = defaultdict(list)
+    for idx, seg in enumerate(segments):
+        voice = seg.get("voice", "Ryan")
+        instruct = seg.get("instruct")
+        key = (voice, instruct)
+        voice_groups[key].append(idx)
+
+    # Generate all segments grouped by voice — keeps timbre consistent
+    wav_by_idx: dict[int, bytes] = {}
+    for (voice, instruct), indices in voice_groups.items():
+        logger.info("Generating %d segments for voice=%s", len(indices), voice)
+        for idx in indices:
+            seg = segments[idx]
+            wav = await synthesize(
+                text=seg["text"],
+                voice=voice,
+                instruct=instruct,
+                language=seg.get("language"),
+            )
+            wav_by_idx[idx] = wav
+
+    # Reassemble in original order
+    wav_parts = [wav_by_idx[i] for i in range(len(segments))]
     return concat_audio_chunks(wav_parts, pause_ms)
