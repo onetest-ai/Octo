@@ -351,17 +351,28 @@ async def _chat_loop(
             if marker_path.exists():
                 try:
                     marker_data = json.loads(marker_path.read_text())
+                    marker_thread = marker_data.get("thread_id")
+                    marker_time = marker_data.get("timestamp", 0)
+                    time_diff = time.time() - marker_time
+                    
+                    logger.info(f"Restart marker found: thread={marker_thread}, age={time_diff:.1f}s, current_thread={thread_id}")
+                    
                     # Check if marker is recent (within 5 minutes) and matches current thread
-                    if (time.time() - marker_data.get("timestamp", 0) < 300 and 
-                        marker_data.get("thread_id") == thread_id):
+                    if time_diff < 300 and marker_thread == thread_id:
                         restart_label = marker_data.get("label", "Restarting")
+                        # Give telegram a moment to fully initialize
+                        await asyncio.sleep(0.5)
                         await tg.send_proactive(
                             f"🐙 **I'm back!** {restart_label} completed successfully.",
                             source="System"
                         )
+                        logger.info("Sent 'I'm back' notification")
+                    else:
+                        logger.info(f"Marker check failed: time_diff={time_diff:.1f}s < 300: {time_diff < 300}, thread_match: {marker_thread == thread_id}")
+                    
                     marker_path.unlink()  # Remove marker after check
                 except Exception as e:
-                    logger.debug(f"Failed to process restart marker: {e}")
+                    logger.error(f"Failed to process restart marker: {e}", exc_info=True)
         
         config = {
             "configurable": {"thread_id": thread_id},
