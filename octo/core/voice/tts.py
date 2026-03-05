@@ -77,8 +77,8 @@ _GEN_KWARGS_CROSS_LINGUAL = {
     "subtalker_top_p": 0.8,
 }
 
-# How many ms to trim from start of cross-lingual audio to cut artifacts
-_CROSS_LINGUAL_TRIM_MS = 100
+# Max window to search for artifact boundary (ms). Artifact is typically 30-150ms.
+_ARTIFACT_SEARCH_MS = 250
 
 _VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
@@ -161,6 +161,74 @@ def _detect_language(text: str) -> str:
 
 # ── Synchronous synthesis ────────────────────────────────────────────
 
+def _trim_cross_lingual_artifact(audio, sr: int) -> tuple:
+    """Detect and trim the leading phoneme artifact in cross-lingual audio.
+
+    The artifact is a short CJK phoneme burst (30-150ms) followed by an
+    energy dip before real speech. We find the dip by computing short-time
+    energy in 10ms windows over the first 250ms, then cut at the minimum.
+
+    Returns (trimmed_audio, trim_ms) — trim_ms=0 if no artifact detected.
+    """
+    import numpy as np
+
+    search_samples = int(sr * _ARTIFACT_SEARCH_MS / 1000)
+    if len(audio) < search_samples * 2:
+        return audio, 0
+
+    window_ms = 10
+    window_samples = int(sr * window_ms / 1000)
+    search_region = audio[:search_samples]
+
+    # Compute RMS energy per window
+    n_windows = len(search_region) // window_samples
+    if n_windows < 3:
+        return audio, 0
+
+    energy = np.array([
+        np.sqrt(np.mean(search_region[i * window_samples:(i + 1) * window_samples] ** 2))
+        for i in range(n_windows)
+    ])
+
+    # Need an initial energy burst (artifact) followed by a dip
+    # Skip leading silence: find first window above 10% of max energy
+    max_e = energy.max()
+    if max_e < 1e-6:
+        return audio, 0
+
+    threshold = max_e * 0.1
+    onset = 0
+    for i in range(n_windows):
+        if energy[i] > threshold:
+            onset = i
+            break
+
+    # From onset, find the energy minimum (the dip between artifact and speech)
+    # Search at least 2 windows past onset, up to end of search region
+    search_start = onset + 2
+    if search_start >= n_windows:
+        return audio, 0
+
+    dip_idx = search_start + np.argmin(energy[search_start:])
+
+    # Validate: the dip should be noticeably lower than the artifact peak
+    artifact_peak = energy[onset:search_start].max() if search_start > onset else 0
+    dip_energy = energy[dip_idx]
+
+    if artifact_peak < 1e-6 or dip_energy > artifact_peak * 0.5:
+        # No clear dip — artifact not detected or it's just normal speech
+        return audio, 0
+
+    # Cut at the dip point
+    trim_sample = dip_idx * window_samples
+    trim_ms = dip_idx * window_ms
+
+    logger.debug("Cross-lingual artifact trimmed: %dms (dip energy %.4f vs peak %.4f)",
+                 trim_ms, dip_energy, artifact_peak)
+
+    return audio[trim_sample:], trim_ms
+
+
 def _estimate_max_tokens(text: str) -> int:
     """Estimate max_new_tokens to prevent runaway generation.
 
@@ -220,12 +288,11 @@ def _synthesize_sync(
 
     audio = wavs[0]
 
-    # Trim leading artifact for cross-lingual (CJK voice → English text)
-    # The first ~100ms often contains native-language phoneme bleed
-    if is_cross_lingual and _CROSS_LINGUAL_TRIM_MS > 0:
-        trim_samples = int(sr * _CROSS_LINGUAL_TRIM_MS / 1000)
-        if len(audio) > trim_samples * 2:  # keep at least half
-            audio = audio[trim_samples:]
+    # Smart trim: detect and remove leading CJK phoneme artifact
+    if is_cross_lingual:
+        audio, trim_ms = _trim_cross_lingual_artifact(audio, sr)
+        if trim_ms:
+            logger.info("Trimmed %dms artifact from %s speaking %s", trim_ms, speaker, lang)
 
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
