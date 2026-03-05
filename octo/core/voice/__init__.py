@@ -16,10 +16,14 @@ def is_available() -> bool:
 
 
 async def local_synthesize(
-    text: str, voice: str = "Ryan", instruct: str | None = None,
+    text: str, voice: str = "Jon", instruct: str | None = None,
     language: str | None = None,
 ) -> bytes:
-    """Synthesize text to WAV bytes using local ParlerTTS."""
+    """Synthesize text to WAV bytes using local ParlerTTS.
+
+    Voices: Jon (default male), Laura (female), Gary (deep male), Lea (bright female).
+    Old names (Ryan, Vivian) and OpenAI aliases still work.
+    """
     from octo.core.voice.tts import synthesize
     return await synthesize(text, voice, instruct=instruct, language=language)
 

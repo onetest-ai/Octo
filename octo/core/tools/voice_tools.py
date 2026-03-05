@@ -66,19 +66,22 @@ def _audio_info(path: str) -> str:
 @tool
 async def generate_speech(
     text: str,
-    voice: str = "Ryan",
+    voice: str = "Jon",
     instruct: str | None = None,
     language: str | None = None,
     output_path: str | None = None,
 ) -> str:
     """Generate speech audio from text (TTS).
 
-    Uses local ParlerTTS model. Automatically chunks long text.
+    Uses local ParlerTTS model with named speakers for consistent voice.
+    Automatically chunks long text.
     Output is saved to .octo/workspace/<date>/ by default,
     or to the specified output_path.
 
-    Available voices: Ryan (energetic male), Vivian (curious female).
-    OpenAI aliases also work: alloy/echo/fable/onyx→Ryan, nova/shimmer→Vivian.
+    Available voices: Jon (default male), Laura (warm female),
+    Gary (deep authoritative male), Lea (bright cheerful female).
+    Old names work: Ryan→Jon, Vivian→Laura.
+    OpenAI aliases: alloy/fable→Jon, echo/onyx→Gary, nova→Laura, shimmer→Lea.
 
     Args:
         text: The text to convert to speech.

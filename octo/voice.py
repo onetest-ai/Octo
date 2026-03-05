@@ -122,7 +122,7 @@ async def transcribe(audio_data: bytes) -> str:
 
 async def synthesize(
     text: str,
-    voice: str = "Ryan",
+    voice: str = "Jon",
     instruct: str | None = None,
     language: str | None = None,
     prep: bool = True,

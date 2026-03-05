@@ -21,53 +21,82 @@ _model_id: str | None = None
 _DEFAULT_MODEL = "parler-tts/parler-tts-mini-v1.1"
 _SAMPLE_RATE = 44100
 
-# ── Voice profiles (description + per-voice seed + emotion presets) ───
-# Each voice is defined by a natural language description and a fixed seed.
-# The seed controls timbre — different seeds produce different voices
-# from the same description.
+# ── Voice profiles (named ParlerTTS speakers + seed + emotion presets) ─
+# Uses named speakers from the v1.1 training set for best consistency.
+# The seed + identical description across segments locks the timbre.
 # Emotions are named description variants the agent can pick per-segment.
+# Recording quality hints ("very close recording", "no background noise")
+# are included in every description for clean output.
+
+_QUALITY_SUFFIX = " in a very close-sounding recording with almost no background noise"
 
 _VOICES: dict[str, dict] = {
-    "Ryan": {
-        "description": "Ryan speaks with excitement and energy in a slightly high pitch",
+    "Jon": {
+        "description": f"Jon's voice is monotone yet slightly fast in delivery, with a very clear audio quality{_QUALITY_SUFFIX}.",
         "seed": 42,
         "emotions": {
-            "default": "Ryan speaks with excitement and energy in a slightly high pitch",
-            "calm": "Ryan speaks calmly and steadily in a clear voice",
-            "explaining": "Ryan speaks clearly and pedagogically, like a teacher",
-            "surprised": "Ryan speaks with surprise and disbelief",
-            "laughing": "Ryan speaks with laughter and amusement",
-            "serious": "Ryan speaks in a serious and thoughtful tone",
-            "whispering": "Ryan whispers softly and quietly",
+            "default": f"Jon's voice is monotone yet slightly fast in delivery, with a very clear audio quality{_QUALITY_SUFFIX}.",
+            "calm": f"Jon's voice is calm and steady with a moderate pace{_QUALITY_SUFFIX}.",
+            "explaining": f"Jon's voice is clear and pedagogical, like a teacher explaining a concept{_QUALITY_SUFFIX}.",
+            "surprised": f"Jon's voice is filled with surprise and disbelief{_QUALITY_SUFFIX}.",
+            "laughing": f"Jon's voice has laughter and amusement in it{_QUALITY_SUFFIX}.",
+            "serious": f"Jon's voice is serious and thoughtful with a measured pace{_QUALITY_SUFFIX}.",
+            "whispering": f"Jon whispers softly and quietly{_QUALITY_SUFFIX}.",
         },
     },
-    "Vivian": {
-        "description": "A female speaker speaks with laughter and curiosity",
+    "Laura": {
+        "description": f"Laura's voice is expressive and animated with a warm tone{_QUALITY_SUFFIX}.",
         "seed": 87,
         "emotions": {
-            "default": "A female speaker speaks with laughter and curiosity",
-            "calm": "A female speaker speaks calmly and gently",
-            "explaining": "A female speaker speaks clearly and informatively",
-            "skeptical": "A female speaker speaks with skepticism and doubt",
-            "surprised": "A female speaker speaks with shock and surprise",
-            "laughing": "A female speaker speaks with laughter and amusement",
-            "serious": "A female speaker speaks in a serious and measured tone",
-            "whispering": "A female speaker whispers softly",
+            "default": f"Laura's voice is expressive and animated with a warm tone{_QUALITY_SUFFIX}.",
+            "calm": f"Laura's voice is calm and gentle with a soothing pace{_QUALITY_SUFFIX}.",
+            "explaining": f"Laura's voice is clear and informative, like explaining something interesting{_QUALITY_SUFFIX}.",
+            "skeptical": f"Laura's voice carries skepticism and doubt{_QUALITY_SUFFIX}.",
+            "surprised": f"Laura's voice is filled with shock and surprise{_QUALITY_SUFFIX}.",
+            "laughing": f"Laura's voice has laughter and amusement{_QUALITY_SUFFIX}.",
+            "serious": f"Laura's voice is serious and measured{_QUALITY_SUFFIX}.",
+            "whispering": f"Laura whispers softly{_QUALITY_SUFFIX}.",
+        },
+    },
+    "Gary": {
+        "description": f"Gary's voice is deep and authoritative with a slow, deliberate pace{_QUALITY_SUFFIX}.",
+        "seed": 55,
+        "emotions": {
+            "default": f"Gary's voice is deep and authoritative with a slow, deliberate pace{_QUALITY_SUFFIX}.",
+            "calm": f"Gary's voice is deep and calm with a steady rhythm{_QUALITY_SUFFIX}.",
+            "explaining": f"Gary's voice is deep and clear, explaining carefully{_QUALITY_SUFFIX}.",
+            "serious": f"Gary's voice is deep, serious and grave{_QUALITY_SUFFIX}.",
+            "laughing": f"Gary's voice is deep with hearty laughter{_QUALITY_SUFFIX}.",
+        },
+    },
+    "Lea": {
+        "description": f"Lea's voice is bright and cheerful with a slightly high pitch and fast pace{_QUALITY_SUFFIX}.",
+        "seed": 63,
+        "emotions": {
+            "default": f"Lea's voice is bright and cheerful with a slightly high pitch and fast pace{_QUALITY_SUFFIX}.",
+            "calm": f"Lea's voice is soft and gentle with a relaxed pace{_QUALITY_SUFFIX}.",
+            "excited": f"Lea's voice is very excited and energetic{_QUALITY_SUFFIX}.",
+            "surprised": f"Lea's voice is filled with surprise and wonder{_QUALITY_SUFFIX}.",
+            "laughing": f"Lea's voice has bright laughter and joy{_QUALITY_SUFFIX}.",
         },
     },
 }
 
-# OpenAI alias → voice name (backward compat)
+# Backward-compat aliases: old names → new named speakers
 _VOICE_MAP = {
-    "alloy": "Ryan",
-    "echo": "Ryan",
-    "fable": "Ryan",
-    "onyx": "Ryan",
-    "nova": "Vivian",
-    "shimmer": "Vivian",
+    # Old Octo voice names
+    "Ryan": "Jon",
+    "Vivian": "Laura",
+    # OpenAI aliases
+    "alloy": "Jon",
+    "echo": "Gary",
+    "fable": "Jon",
+    "onyx": "Gary",
+    "nova": "Laura",
+    "shimmer": "Lea",
 }
 
-_DEFAULT_VOICE = "Ryan"
+_DEFAULT_VOICE = "Jon"
 
 
 # ── Model loading ────────────────────────────────────────────────────
@@ -152,15 +181,13 @@ def _synthesize_sync(
     language: str | None = None,
 ) -> bytes:
     """Run TTS inference synchronously. Returns WAV bytes."""
-    import torch
+    from transformers import set_seed
     import soundfile as sf
 
     description, seed = _resolve_voice(voice, instruct)
 
-    # Per-voice seed for consistent timbre
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
+    # set_seed covers torch, cuda, and numpy RNGs for full reproducibility
+    set_seed(seed)
 
     model, tokenizer, desc_tokenizer = _get_model()
     device = next(model.parameters()).device
@@ -176,6 +203,7 @@ def _synthesize_sync(
         prompt_attention_mask=text_inputs.attention_mask,
         do_sample=True,
         temperature=1.0,
+        min_new_tokens=10,
     )
 
     audio = generation.cpu().numpy().squeeze()
@@ -304,7 +332,7 @@ def concat_audio_chunks(chunks: list[bytes], pause_ms: int = 300) -> bytes:
 
 async def synthesize(
     text: str,
-    voice: str = "Ryan",
+    voice: str = "Jon",
     instruct: str | None = None,
     language: str | None = None,
     max_chars: int = 300,
@@ -349,7 +377,7 @@ async def synthesize_multi(
 
     voice_groups: dict[tuple[str, str | None], list[int]] = defaultdict(list)
     for idx, seg in enumerate(segments):
-        voice = seg.get("voice", "Ryan")
+        voice = seg.get("voice", "Jon")
         instruct = seg.get("instruct")
         key = (voice, instruct)
         voice_groups[key].append(idx)

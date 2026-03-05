@@ -826,11 +826,12 @@ def _build_supervisor_prompt(
             if _voice_ok():
                 parts.append(
                     "## Voice Tools (Local TTS/STT)\n\n"
-                    "Use `generate_speech` for single-voice TTS. Voices: Ryan (energetic male), "
-                    "Vivian (curious female). OpenAI aliases work: alloy/echo→Ryan, nova→Vivian.\n"
-                    "Pass `instruct` for emotion — preset names: calm, explaining, surprised, "
-                    "laughing, serious, whispering, skeptical (Vivian only). "
-                    "Or pass a full custom description.\n"
+                    "Use `generate_speech` for single-voice TTS. Named speakers for consistent "
+                    "voice: Jon (default male), Laura (warm female), Gary (deep male), "
+                    "Lea (bright female). Old names work: Ryan→Jon, Vivian→Laura.\n"
+                    "Pass `instruct` for emotion — presets: calm, explaining, surprised, "
+                    "laughing, serious, whispering, skeptical (Laura), excited (Lea). "
+                    "Or pass a full custom voice description.\n"
                     "Use `generate_multi_voice_speech` for multi-voice dialogue — each segment gets "
                     "its own voice and emotion. Vary emotions per segment for lively output!\n"
                     "Use `transcribe_audio` for speech-to-text.\n\n"
