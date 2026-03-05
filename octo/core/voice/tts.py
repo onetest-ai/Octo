@@ -71,7 +71,14 @@ _GEN_KWARGS_CROSS_LINGUAL = {
     "top_p": 0.85,
     "top_k": 20,
     "repetition_penalty": 1.3,
+    # Stabilize sub-talker (12Hz tokenizer) for cross-lingual first tokens
+    "subtalker_temperature": 0.3,
+    "subtalker_top_k": 15,
+    "subtalker_top_p": 0.8,
 }
+
+# How many ms to trim from start of cross-lingual audio to cut artifacts
+_CROSS_LINGUAL_TRIM_MS = 100
 
 _VOICE_SEED = int(os.environ.get("VOICE_SEED", "42"))
 
@@ -191,7 +198,8 @@ def _synthesize_sync(
 
     # Select gen kwargs: cross-lingual needs tighter params
     native = _NATIVE_LANG.get(speaker, "English")
-    if native != lang:
+    is_cross_lingual = native != lang
+    if is_cross_lingual:
         gen_kwargs = dict(_GEN_KWARGS_CROSS_LINGUAL)
         logger.debug(
             "Cross-lingual: %s (native %s) speaking %s — using tight params",
@@ -210,8 +218,17 @@ def _synthesize_sync(
         **gen_kwargs,
     )
 
+    audio = wavs[0]
+
+    # Trim leading artifact for cross-lingual (CJK voice → English text)
+    # The first ~100ms often contains native-language phoneme bleed
+    if is_cross_lingual and _CROSS_LINGUAL_TRIM_MS > 0:
+        trim_samples = int(sr * _CROSS_LINGUAL_TRIM_MS / 1000)
+        if len(audio) > trim_samples * 2:  # keep at least half
+            audio = audio[trim_samples:]
+
     buf = io.BytesIO()
-    sf.write(buf, wavs[0], sr, format="WAV", subtype="PCM_16")
+    sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
     return buf.getvalue()
 
 
