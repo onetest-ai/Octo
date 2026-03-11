@@ -691,7 +691,8 @@ class TelegramTransport:
             elif "rate limit" in error_str or "throttling" in error_str:
                 logger.warning("Rate limited during Telegram message: %s", e)
                 await update.message.reply_text("Rate limited. Please wait a moment and try again.")
-            elif "too long" in error_str or "context length" in error_str:
+            elif "too long" in error_str or "context length" in error_str \
+                    or "tokens_limit_reached" in error_str or "413" in error_str:
                 logger.warning("Context overflow during Telegram message: %s", e)
                 await update.message.reply_text("Conversation too long. Send /clear to reset, or ask me to /compact.")
             else:
