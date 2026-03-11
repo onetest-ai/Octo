@@ -100,7 +100,7 @@ def _check_provider_credentials() -> CheckResult:
         providers.append("azure")
     if GITHUB_TOKEN:
         providers.append("github")
-        providers.append("copilot")  # same token works for Copilot Enterprise API
+        providers.append("copilot")  # same token works for Copilot API (personal and enterprise)
     if GOOGLE_API_KEY:
         providers.append("gemini")
     if OPENAI_API_BASE:

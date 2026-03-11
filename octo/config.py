@@ -215,7 +215,7 @@ GITHUB_MODELS_ANTHROPIC_BASE_URL = os.getenv(
     "GITHUB_MODELS_ANTHROPIC_BASE_URL", "https://models.inference.ai.azure.com"
 )
 
-# --- GitHub Copilot Enterprise ---
+# --- GitHub Copilot ---
 # OpenAI-compatible endpoint; reuses GITHUB_TOKEN (gho_ OAuth token)
 GITHUB_COPILOT_BASE_URL = os.getenv(
     "GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com"

@@ -24,7 +24,7 @@ _PROVIDERS = [
     ("3", "openai", "OpenAI", "GPT-4o, o1, o3 — requires OPENAI_API_KEY"),
     ("4", "azure", "Azure OpenAI", "Azure-hosted models — requires endpoint + key"),
     ("5", "github", "GitHub Models", "GPT, Claude, Mistral, Llama via GitHub PAT"),
-    ("6", "copilot", "GitHub Copilot Enterprise", "Copilot API via GITHUB_TOKEN (gho_ OAuth token)"),
+    ("6", "copilot", "GitHub Copilot", "Copilot API via GITHUB_TOKEN — works with personal and enterprise"),
     ("7", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
     ("8", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
 ]
@@ -416,7 +416,7 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             ["GITHUB_TOKEN", "GITHUB_MODELS_BASE_URL", "GITHUB_MODELS_ANTHROPIC_BASE_URL"],
         ),
         (
-            "GitHub Copilot Enterprise",
+            "GitHub Copilot",
             "Copilot chat completions API (reuses GITHUB_TOKEN OAuth token)",
             ["GITHUB_COPILOT_BASE_URL"],
         ),

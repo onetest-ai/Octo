@@ -113,7 +113,7 @@ def _validate_copilot(creds: dict[str, str], model_name: str) -> tuple[bool, str
         max_tokens=16,
     )
     llm.invoke("Say 'ok'")
-    return True, f"Connected to GitHub Copilot Enterprise ({model})"
+    return True, f"Connected to GitHub Copilot ({model})"
 
 
 def _validate_gemini(creds: dict[str, str], model_name: str) -> tuple[bool, str]:

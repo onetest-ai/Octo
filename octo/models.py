@@ -322,7 +322,7 @@ def _make_gemini(name: str, *, config: dict | None = None) -> BaseChatModel:
 
 
 def _make_copilot(name: str, *, config: dict | None = None) -> BaseChatModel:
-    """Create a LangChain model via GitHub Copilot Enterprise API.
+    """Create a LangChain model via GitHub Copilot API.
 
     Uses the same GITHUB_TOKEN (OAuth ``gho_`` token) as GitHub Models but
     targets ``https://api.githubcopilot.com`` — the Copilot chat completions
