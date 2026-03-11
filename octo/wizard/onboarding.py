@@ -24,8 +24,9 @@ _PROVIDERS = [
     ("3", "openai", "OpenAI", "GPT-4o, o1, o3 — requires OPENAI_API_KEY"),
     ("4", "azure", "Azure OpenAI", "Azure-hosted models — requires endpoint + key"),
     ("5", "github", "GitHub Models", "GPT, Claude, Mistral, Llama via GitHub PAT"),
-    ("6", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
-    ("7", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
+    ("6", "copilot", "GitHub Copilot Enterprise", "Copilot API via GITHUB_TOKEN (gho_ OAuth token)"),
+    ("7", "gemini", "Google Gemini", "Gemini 2.5 Flash/Pro — requires GOOGLE_API_KEY"),
+    ("8", "local", "Local / Custom", "vLLM, Ollama, llama.cpp — OpenAI-compatible endpoint"),
 ]
 
 _MCP_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -235,6 +236,15 @@ def _collect_credentials(provider: str) -> dict[str, str]:
             console.print("  [dim]Create a PAT at github.com/settings/tokens with 'models:read' scope[/dim]")
             creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub Personal Access Token", password=True)
 
+    elif provider == "copilot":
+        existing = os.environ.get("GITHUB_TOKEN", "")
+        if existing:
+            console.print("  [dim]Using GITHUB_TOKEN from environment (OAuth gho_ token)[/dim]")
+            creds["GITHUB_TOKEN"] = existing
+        else:
+            console.print("  [dim]Requires a GitHub OAuth token (gho_) with Copilot access[/dim]")
+            creds["GITHUB_TOKEN"] = Prompt.ask("  GitHub OAuth Token", password=True)
+
     elif provider == "gemini":
         existing = os.environ.get("GOOGLE_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
         if existing:
@@ -394,7 +404,7 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
     sections: list[tuple[str, str, list[str]]] = [
         (
             "LLM Provider",
-            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github, gemini, local",
+            "Auto-detected from model name if not set.\n# Values: anthropic, bedrock, openai, azure, github, copilot, gemini, local",
             ["LLM_PROVIDER"],
         ),
         ("Anthropic", "Direct Anthropic API access", ["ANTHROPIC_API_KEY"]),
@@ -409,6 +419,11 @@ def _write_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
             "GitHub Models",
             "GPT, Claude, Mistral, Llama via GitHub PAT (models:read scope)",
             ["GITHUB_TOKEN", "GITHUB_MODELS_BASE_URL", "GITHUB_MODELS_ANTHROPIC_BASE_URL"],
+        ),
+        (
+            "GitHub Copilot Enterprise",
+            "Copilot chat completions API (reuses GITHUB_TOKEN OAuth token)",
+            ["GITHUB_COPILOT_BASE_URL"],
         ),
         ("Google Gemini", "Gemini 2.5 Flash/Pro", ["GOOGLE_API_KEY"]),
         (

@@ -100,6 +100,7 @@ def _check_provider_credentials() -> CheckResult:
         providers.append("azure")
     if GITHUB_TOKEN:
         providers.append("github")
+        providers.append("copilot")  # same token works for Copilot Enterprise API
     if GOOGLE_API_KEY:
         providers.append("gemini")
     if OPENAI_API_BASE:
@@ -137,6 +138,7 @@ async def _check_llm_connectivity() -> CheckResult:
             AZURE_OPENAI_API_KEY,
             AZURE_OPENAI_API_VERSION,
             AZURE_OPENAI_ENDPOINT,
+            GITHUB_COPILOT_BASE_URL,
             GITHUB_TOKEN,
             GOOGLE_API_KEY,
             LOW_TIER_MODEL,
@@ -160,6 +162,7 @@ async def _check_llm_connectivity() -> CheckResult:
             "AZURE_OPENAI_ENDPOINT": AZURE_OPENAI_ENDPOINT,
             "AZURE_OPENAI_API_VERSION": AZURE_OPENAI_API_VERSION,
             "GITHUB_TOKEN": GITHUB_TOKEN,
+            "GITHUB_COPILOT_BASE_URL": GITHUB_COPILOT_BASE_URL,
             "GOOGLE_API_KEY": GOOGLE_API_KEY,
         }
 

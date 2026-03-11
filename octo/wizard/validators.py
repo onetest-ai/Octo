@@ -18,6 +18,7 @@ def validate_provider(
             "openai": _validate_openai,
             "azure": _validate_azure,
             "github": _validate_github,
+            "copilot": _validate_copilot,
             "gemini": _validate_gemini,
             "local": _validate_local,
         }.get(provider)
@@ -98,6 +99,21 @@ def _validate_github(creds: dict[str, str], model_name: str) -> tuple[bool, str]
     )
     llm.invoke("Say 'ok'")
     return True, f"Connected to GitHub Models ({model})"
+
+
+def _validate_copilot(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
+    from langchain_openai import ChatOpenAI
+    from octo.config import GITHUB_COPILOT_BASE_URL
+
+    model = (model_name or "copilot/gpt-4o-mini").removeprefix("copilot/")
+    llm = ChatOpenAI(
+        model=model,
+        api_key=creds.get("GITHUB_TOKEN", ""),
+        base_url=creds.get("GITHUB_COPILOT_BASE_URL", GITHUB_COPILOT_BASE_URL),
+        max_tokens=16,
+    )
+    llm.invoke("Say 'ok'")
+    return True, f"Connected to GitHub Copilot Enterprise ({model})"
 
 
 def _validate_gemini(creds: dict[str, str], model_name: str) -> tuple[bool, str]:

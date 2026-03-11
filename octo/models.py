@@ -51,6 +51,7 @@ from octo.config import (
     GITHUB_TOKEN,
     GITHUB_MODELS_BASE_URL,
     GITHUB_MODELS_ANTHROPIC_BASE_URL,
+    GITHUB_COPILOT_BASE_URL,
     GOOGLE_API_KEY,
     LLM_PROVIDER,
     DEFAULT_MODEL,
@@ -95,6 +96,7 @@ def _cfg(config: dict | None, key: str, default: str = "") -> str:
         "github_token": GITHUB_TOKEN,
         "github_base_url": GITHUB_MODELS_BASE_URL,
         "github_anthropic_base_url": GITHUB_MODELS_ANTHROPIC_BASE_URL,
+        "copilot_base_url": GITHUB_COPILOT_BASE_URL,
         "google_api_key": GOOGLE_API_KEY,
         "default_model": DEFAULT_MODEL,
         "high_tier_model": HIGH_TIER_MODEL,
@@ -319,6 +321,28 @@ def _make_gemini(name: str, *, config: dict | None = None) -> BaseChatModel:
     return ChatGoogleGenerativeAI(**kwargs)
 
 
+def _make_copilot(name: str, *, config: dict | None = None) -> BaseChatModel:
+    """Create a LangChain model via GitHub Copilot Enterprise API.
+
+    Uses the same GITHUB_TOKEN (OAuth ``gho_`` token) as GitHub Models but
+    targets ``https://api.githubcopilot.com`` — the Copilot chat completions
+    endpoint, which is OpenAI-compatible and exposes additional models.
+    """
+    from langchain_openai import ChatOpenAI
+
+    token = _cfg(config, "github_token") or _cfg(config, "api_key")
+    base_url = (
+        _cfg(config, "copilot_base_url") or "https://api.githubcopilot.com"
+    )
+    # Strip copilot/ prefix if present
+    model_id = name.removeprefix("copilot/")
+    return ChatOpenAI(
+        model=model_id,
+        api_key=token,
+        base_url=base_url,
+    )
+
+
 def _make_local(name: str, *, config: dict | None = None) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
@@ -347,6 +371,10 @@ _REGISTRY: dict[str, ProviderSpec] = {
     "github": ProviderSpec(
         _make_github,
         "github/openai/gpt-4.1", "github/openai/gpt-4.1", "github/openai/gpt-4o-mini",
+    ),
+    "copilot": ProviderSpec(
+        _make_copilot,
+        "copilot/gpt-4o", "copilot/claude-sonnet-4-5", "copilot/gpt-4o-mini",
     ),
     "gemini": ProviderSpec(
         _make_gemini, "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite",
