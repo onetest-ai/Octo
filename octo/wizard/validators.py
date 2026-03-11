@@ -87,13 +87,14 @@ def _validate_azure(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
 
 def _validate_github(creds: dict[str, str], model_name: str) -> tuple[bool, str]:
     from langchain_openai import ChatOpenAI
+    from octo.config import GITHUB_MODELS_BASE_URL
 
     # Strip github/ prefix for validation; default to a cheap model
     model = (model_name or "github/openai/gpt-4o-mini").removeprefix("github/")
     llm = ChatOpenAI(
         model=model,
         api_key=creds.get("GITHUB_TOKEN", ""),
-        base_url="https://models.inference.ai.azure.com",
+        base_url=GITHUB_MODELS_BASE_URL,
         max_tokens=16,
     )
     llm.invoke("Say 'ok'")
