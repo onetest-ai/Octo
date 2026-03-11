@@ -663,6 +663,12 @@ class TelegramTransport:
                     await self._reply(update, result)
                     return
                 # result is None → command not recognized, fall through to graph
+            except asyncio.CancelledError:
+                # CancelledError from graph rebuild (e.g. /mcp disable) must not
+                # escape to PTB dispatcher or Telegram stops responding entirely.
+                logger.warning("Telegram command /%s raised CancelledError", cmd)
+                await update.message.reply_text("Command completed (interrupted by graph reload).")
+                return
             except Exception as e:
                 logger.exception("Telegram command /%s failed", cmd)
                 await update.message.reply_text(f"Command failed: {e}")
