@@ -27,7 +27,8 @@ def _classify_error(error: BaseException) -> str | None:
         return "timeout"
     if "rate limit" in msg or "too many requests" in msg or "throttling" in msg:
         return "rate_limit"
-    if "too long" in msg or "context length" in msg or "input is too long" in msg:
+    if "too long" in msg or "context length" in msg or "input is too long" in msg \
+            or "tokens_limit_reached" in msg or "413" in msg:
         return "context_overflow"
     if "serviceunav" in msg or "service unavailable" in msg or "503" in msg:
         return "timeout"  # treat same as timeout — transient
