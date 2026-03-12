@@ -851,7 +851,7 @@ async def _chat_loop(
                         return "No MCP servers configured."
                     lines = []
                     for s in statuses:
-                        status = "disabled" if s.get("disabled") else f"{s.get('tools', 0)} tools"
+                        status = "disabled" if s.get("disabled") else f"{s.get('tool_count', 0)} tools"
                         lines.append(f"• `{s['name']}` — {status}")
                     return "**MCP servers:**\n" + "\n".join(lines)
 
