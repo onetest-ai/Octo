@@ -982,7 +982,19 @@ async def _chat_loop(
         _last_ctrl_c = 0.0
         try:
             while True:
-                user_input = await ui.styled_input_async()
+                try:
+                    user_input = await ui.styled_input_async()
+                except asyncio.CancelledError:
+                    # Anyio cancel scope propagation from session_pool.close_all()
+                    # during /mcp disable/enable graph rebuild can arrive here after
+                    # the rebuild has already completed successfully. Reset the prompt
+                    # session and continue — the event loop and graph are both healthy.
+                    ui.setup_input(
+                        _BASE_SLASH_CMDS
+                        + [f"/{s.name}" for s in skills]
+                        + [f"/{a.name}" for a in agent_configs]
+                    )
+                    continue
 
                 if not user_input:
                     continue

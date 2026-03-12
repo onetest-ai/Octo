@@ -237,7 +237,7 @@ class BackgroundWorkerPool:
                     timeout=5.0,
                     return_when=asyncio.ALL_COMPLETED,
                 )
-            except Exception:
+            except BaseException:
                 pass  # tasks may already be cancelled by MCP teardown
         self._running.clear()
 
