@@ -135,6 +135,8 @@ class OctoEngine:
                 config["configurable"]["request_metadata"] = metadata
             if recursion_limit:
                 config["recursion_limit"] = recursion_limit
+            if self.config.callbacks:
+                config["callbacks"] = self.config.callbacks
             input_data = {"messages": [HumanMessage(content=message)]}
 
             result = await self._app.ainvoke(input_data, config=config)
@@ -192,6 +194,8 @@ class OctoEngine:
             config["configurable"]["request_metadata"] = metadata
         if recursion_limit:
             config["recursion_limit"] = recursion_limit
+        if self.config.callbacks:
+            config["callbacks"] = self.config.callbacks
         input_data = {"messages": [HumanMessage(content=message)]}
 
         async for event in self._app.astream_events(input_data, config=config, version="v2"):

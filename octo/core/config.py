@@ -76,6 +76,9 @@ class OctoConfig:
     persona_files: dict[str, str] = field(default_factory=dict)
     # {"SOUL.md": "content...", "USER.md": "content...", etc.}
 
+    # --- Callbacks ---
+    callbacks: list = field(default_factory=list)  # LangChain callback handlers (e.g. Langfuse)
+
     # --- Workspace ---
     workspace_path: str = ""  # project root (for CLI: the directory containing .octo/)
 
