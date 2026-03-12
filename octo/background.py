@@ -847,5 +847,86 @@ def _is_long_running_command(command: str) -> bool:
     return False
 
 
+def make_list_bg_tasks_tool():
+    """Build the list_background_tasks tool for the supervisor. Call after set_worker_pool()."""
+    from langchain_core.tools import tool
+
+    @tool
+    def list_background_tasks(status: str = "") -> str:
+        """List background tasks dispatched via dispatch_background.
+
+        Shows process and agent tasks with their current status.
+        Use this when the user asks what tasks are running, pending, or completed.
+
+        Args:
+            status: Optional filter — "pending", "running", "completed",
+                    "failed", "paused", "cancelled". Leave empty to list all.
+        """
+        pool = get_worker_pool()
+        if not pool:
+            return "Error: background worker pool not initialized."
+        tasks = pool.list_tasks(status=status)
+        if not tasks:
+            label = f" with status '{status}'" if status else ""
+            return f"No background tasks{label}."
+        lines = []
+        for t in tasks[:20]:
+            detail = t.command[:80] if t.type == "process" else (t.prompt[:80] if t.prompt else "")
+            line = f"- **{t.id}** [{t.type}] {t.status} — {detail}"
+            if t.error:
+                line += f" (error: {t.error[:60]})"
+            lines.append(line)
+        header = f"Background tasks (showing {len(lines)} of {len(tasks)}):" if len(tasks) > 20 else "Background tasks:"
+        return header + "\n" + "\n".join(lines)
+
+    return list_background_tasks
+
+
+def make_get_bg_task_tool():
+    """Build the get_background_task tool for the supervisor. Call after set_worker_pool()."""
+    from langchain_core.tools import tool
+
+    @tool
+    def get_background_task(task_id: str) -> str:
+        """Get the status and result of a specific background task by ID.
+
+        Use this when the user asks about a specific task or wants to know
+        if a previously dispatched task has finished.
+
+        Args:
+            task_id: The 8-character task ID returned by dispatch_background.
+        """
+        pool = get_worker_pool()
+        if not pool:
+            return "Error: background worker pool not initialized."
+        task = pool.get_task(task_id)
+        if not task:
+            return f"Task '{task_id}' not found."
+        lines = [
+            f"**ID**: {task.id}",
+            f"**Type**: {task.type}",
+            f"**Status**: {task.status}",
+            f"**Created**: {task.created_at[:19].replace('T', ' ')} UTC",
+        ]
+        if task.started_at:
+            lines.append(f"**Started**: {task.started_at[:19].replace('T', ' ')} UTC")
+        if task.completed_at:
+            lines.append(f"**Completed**: {task.completed_at[:19].replace('T', ' ')} UTC")
+        if task.type == "process":
+            lines.append(f"**Command**: `{task.command}`")
+        elif task.prompt:
+            lines.append(f"**Prompt**: {task.prompt}")
+        if task.paused_question:
+            lines.append(f"**Waiting for answer**: {task.paused_question}")
+        if task.error:
+            lines.append(f"**Error**: {task.error}")
+        if task.result:
+            result_preview = task.result[:2000] + ("..." if len(task.result) > 2000 else "")
+            lines.append(f"**Result**:\n{result_preview}")
+        return "\n".join(lines)
+
+    return get_background_task
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()

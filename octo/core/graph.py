@@ -1330,8 +1330,14 @@ async def build_graph(
         _cli_only_tools.append(make_schedule_task_tool())
         _cli_only_tools.append(make_manage_scheduled_tasks_tool())
 
-        from octo.background import make_dispatch_background_tool
+        from octo.background import (
+            make_dispatch_background_tool,
+            make_list_bg_tasks_tool,
+            make_get_bg_task_tool,
+        )
         _cli_only_tools.append(make_dispatch_background_tool())
+        _cli_only_tools.append(make_list_bg_tasks_tool())
+        _cli_only_tools.append(make_get_bg_task_tool())
 
         from octo.core.tools.telegram_tools import send_file, send_voice
         _cli_only_tools.extend([send_file, send_voice])
