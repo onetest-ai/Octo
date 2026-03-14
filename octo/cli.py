@@ -269,7 +269,7 @@ async def _chat_loop(
             ui.print_status("Voice enabled", "green")
 
         # Setup input with slash command completion
-        _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/agents", "/skills",
+        _BASE_SLASH_CMDS = ["/help", "/clear", "/compact", "/context", "/stats", "/agents", "/skills",
                             "/tools", "/call", "/projects", "/projects show", "/projects create",
                             "/projects update", "/projects remove", "/projects reload",
                             "/sessions", "/plan", "/profile",
@@ -1638,6 +1638,37 @@ async def _chat_loop(
                     )
                     continue
 
+                if user_input == "/stats":
+                    stats = cli_callback.get_session_stats()
+                    elapsed = stats["session_duration_s"]
+                    mins = int(elapsed // 60)
+                    secs = int(elapsed % 60)
+                    ui.console.print(f"  [bold]Session Stats[/bold]")
+                    ui.console.print(f"  Duration: {mins}m {secs}s")
+                    ui.console.print(
+                        f"  Invocations: {stats['invocations']} | "
+                        f"Steps: {stats['total_steps']}"
+                    )
+                    ui.console.print(
+                        f"  Tokens: {stats['total_input_tokens']:,} in + "
+                        f"{stats['total_output_tokens']:,} out"
+                    )
+                    if stats["agent_stats"]:
+                        ui.console.print(f"  [bold]Agent Performance:[/bold]")
+                        for name, a in sorted(
+                            stats["agent_stats"].items(),
+                            key=lambda x: x[1]["total_time"],
+                            reverse=True,
+                        ):
+                            avg = a["total_time"] / a["calls"] if a["calls"] else 0
+                            err_str = f" ({a['errors']} errors)" if a["errors"] else ""
+                            ui.console.print(
+                                f"    {name}: {a['calls']} calls, "
+                                f"{a['total_time']:.1f}s total, "
+                                f"{avg:.1f}s avg{err_str}"
+                            )
+                    continue
+
                 if user_input.startswith("/profile"):
                     from octo.config import get_active_profile, set_active_profile, BUILTIN_PROFILES
                     parts = user_input.split(maxsplit=1)
@@ -2087,6 +2118,10 @@ async def _chat_loop(
                 save_session(thread_id, preview=preview_text, model=active_model)
 
                 try:
+                    cli_callback.bump_invocation()
+                    from datetime import datetime as _dt_inv, timezone as _tz_inv
+                    _invoke_start = _dt_inv.now(tz=_tz_inv.utc)
+
                     # Start thinking spinner — callback will stop it on first tool call
                     spinner_text = "[yellow]Thinking...[/yellow]"
                     if cli_callback.active_task:
@@ -2146,6 +2181,10 @@ async def _chat_loop(
                             status.stop()
                         except Exception:
                             pass
+
+                    # Track invocation duration
+                    _invoke_elapsed = (_dt_inv.now(tz=_tz_inv.utc) - _invoke_start).total_seconds()
+                    cli_callback.track_agent_call("supervisor", _invoke_elapsed, error=result is None)
 
                     if result is None:
                         ui.print_info("Aborted.")

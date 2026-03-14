@@ -636,6 +636,7 @@ def print_help() -> None:
         ("/clear", "Reset conversation (new thread)"),
         ("/compact", "Summarize older messages to free context"),
         ("/context", "Show context window usage"),
+        ("/stats", "Session stats (duration, tokens, agent performance)"),
         ("/state", "Show project state (STATE.md)"),
         ("/memory [sub]", "View memories (daily/long, default: both)"),
         ("/agents", "List loaded agents"),

@@ -798,6 +798,107 @@ def make_dispatch_background_tool():
     return dispatch_background
 
 
+def make_parallel_dispatch_tool():
+    """Build the parallel_dispatch tool for concurrent task execution."""
+    from langchain_core.tools import tool
+
+    @tool
+    async def parallel_dispatch(
+        tasks: str,
+        timeout: int = 600,
+    ) -> str:
+        """Run multiple independent tasks in parallel and wait for ALL results.
+
+        Use this when you have 2+ independent subtasks that don't depend on each
+        other. Each task runs as an in-process agent with full MCP tool access.
+        You get all results back in one response — much faster than sequential.
+
+        Example tasks JSON:
+        [
+          {"prompt": "Search for recent AI news on Reddit", "agent_name": "trend-researcher"},
+          {"prompt": "Check open PRs in onetest project", "agent_name": ""},
+          {"prompt": "Analyze code quality of octo/cli.py", "agent_name": ""}
+        ]
+
+        Args:
+            tasks: JSON array of task objects. Each must have "prompt" (required)
+                and optionally "agent_name" to use a specific agent.
+            timeout: Max seconds to wait for ALL tasks (default 600 = 10 min).
+                Individual tasks that finish early are collected immediately.
+        """
+        pool = get_worker_pool()
+        if not pool:
+            return "Error: background worker pool not initialized."
+
+        try:
+            task_list = json.loads(tasks)
+        except json.JSONDecodeError as e:
+            return f"Error: invalid JSON for tasks: {e}"
+
+        if not isinstance(task_list, list) or len(task_list) < 2:
+            return "Error: provide at least 2 tasks as a JSON array."
+        if len(task_list) > 8:
+            return "Error: maximum 8 parallel tasks."
+
+        # Dispatch all tasks
+        dispatched: list[BackgroundTask] = []
+        for i, t in enumerate(task_list):
+            if not isinstance(t, dict) or "prompt" not in t:
+                return f"Error: task {i} missing 'prompt' field."
+            task_id = uuid.uuid4().hex[:8]
+            bt = BackgroundTask(
+                id=task_id,
+                type="agent",
+                status="pending",
+                created_at=_now(),
+                prompt=t["prompt"],
+                agent_name=t.get("agent_name", ""),
+                thread_id=f"parallel:{task_id}",
+                max_turns=30,
+            )
+            await pool.dispatch(bt)
+            dispatched.append(bt)
+
+        # Wait for all to complete
+        task_ids = {bt.id for bt in dispatched}
+        deadline = asyncio.get_event_loop().time() + timeout
+        results: dict[str, str] = {}
+
+        while task_ids and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(2)
+            for tid in list(task_ids):
+                t = pool.get_task(tid)
+                if t and t.status in ("completed", "failed", "cancelled"):
+                    task_ids.discard(tid)
+                    if t.status == "completed":
+                        results[tid] = t.result or "(no output)"
+                    else:
+                        results[tid] = f"[{t.status}] {t.error or 'unknown error'}"
+
+        # Collect any remaining as timed out
+        for tid in task_ids:
+            results[tid] = "[timed out]"
+
+        # Format combined results
+        lines = []
+        for i, bt in enumerate(dispatched):
+            prompt_preview = bt.prompt[:80]
+            agent_label = f" ({bt.agent_name})" if bt.agent_name else ""
+            result_text = results.get(bt.id, "[unknown]")
+            # Cap individual results to avoid blowing context
+            if len(result_text) > 4000:
+                result_text = result_text[:4000] + "\n... (truncated)"
+            lines.append(
+                f"### Task {i+1}{agent_label}: {prompt_preview}\n"
+                f"**ID**: {bt.id}\n\n"
+                f"{result_text}"
+            )
+
+        return "\n\n---\n\n".join(lines)
+
+    return parallel_dispatch
+
+
 # ── Helpers ───────────────────────────────────────────────────────
 
 def _is_claude_command(command: str) -> bool:

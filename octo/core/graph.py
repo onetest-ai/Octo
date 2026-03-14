@@ -891,6 +891,16 @@ def _build_supervisor_prompt(
             "- Shell scripts, builds, tests → **process**\n\n"
             "The user is notified automatically when a task completes. They can check status "
             "with `/tasks` and view details with `/task <id>`.\n\n"
+            "## Parallel Execution\n\n"
+            "Use `parallel_dispatch` when you have 2+ **independent** subtasks that don't "
+            "depend on each other. All tasks run concurrently and results are returned together. "
+            "This is significantly faster than running tasks sequentially.\n\n"
+            "Good use cases:\n"
+            "- Research multiple topics simultaneously\n"
+            "- Check status across multiple projects\n"
+            "- Run independent analyses in parallel\n"
+            "- Generate multiple media assets concurrently\n\n"
+            "Do NOT use when tasks depend on each other's output.\n\n"
             "Use background tasks when the user asks for:\n"
             "- Large analysis, code generation, or research\n"
             "- **Audio/TTS generation** — especially long text narration, multi-voice synthesis, "
@@ -1334,10 +1344,12 @@ async def build_graph(
             make_dispatch_background_tool,
             make_list_bg_tasks_tool,
             make_get_bg_task_tool,
+            make_parallel_dispatch_tool,
         )
         _cli_only_tools.append(make_dispatch_background_tool())
         _cli_only_tools.append(make_list_bg_tasks_tool())
         _cli_only_tools.append(make_get_bg_task_tool())
+        _cli_only_tools.append(make_parallel_dispatch_tool())
 
         from octo.core.tools.telegram_tools import send_file, send_voice
         _cli_only_tools.extend([send_file, send_voice])

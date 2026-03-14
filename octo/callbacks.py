@@ -65,6 +65,11 @@ class OctiCallbackHandler(BaseCallbackHandler):
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
 
+        # Agent execution tracking
+        self.agent_stats: Dict[str, Dict[str, Any]] = {}  # name -> {calls, total_time, errors}
+        self.session_start: datetime = datetime.now(tz=timezone.utc)
+        self.invocation_count: int = 0  # number of user → response cycles
+
         # Active task name (from todos) for spinner display
         self.active_task: str = ""
 
@@ -554,6 +559,20 @@ class OctiCallbackHandler(BaseCallbackHandler):
 
     # ── Utility ──────────────────────────────────────────────────────────
 
+    def track_agent_call(self, agent_name: str, duration_s: float, *, error: bool = False) -> None:
+        """Record an agent invocation for stats tracking."""
+        if agent_name not in self.agent_stats:
+            self.agent_stats[agent_name] = {"calls": 0, "total_time": 0.0, "errors": 0}
+        stats = self.agent_stats[agent_name]
+        stats["calls"] += 1
+        stats["total_time"] += duration_s
+        if error:
+            stats["errors"] += 1
+
+    def bump_invocation(self) -> None:
+        """Increment user→response invocation counter."""
+        self.invocation_count += 1
+
     def reset_step_counter(self) -> None:
         """Reset the step counter and token tracking for a new conversation."""
         self.step_counter = 0
@@ -568,6 +587,18 @@ class OctiCallbackHandler(BaseCallbackHandler):
             "total_output": self.total_output_tokens,
             "last_input": self.last_input_tokens,
             "last_output": self.last_output_tokens,
+        }
+
+    def get_session_stats(self) -> dict:
+        """Return full session statistics."""
+        elapsed = (datetime.now(tz=timezone.utc) - self.session_start).total_seconds()
+        return {
+            "session_duration_s": elapsed,
+            "invocations": self.invocation_count,
+            "total_steps": self.step_counter,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "agent_stats": dict(self.agent_stats),
         }
 
 
