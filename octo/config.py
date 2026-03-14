@@ -235,7 +235,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "")
 # HIGH  = complex reasoning, architecture, multi-step planning
 # DEFAULT = supervisor routing, general chat, tool use
 # LOW   = summarization, simple workers, cost-sensitive tasks
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-5-20250929")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "claude-sonnet-4-6-20250924")
 HIGH_TIER_MODEL = os.getenv("HIGH_TIER_MODEL", DEFAULT_MODEL)
 LOW_TIER_MODEL = os.getenv("LOW_TIER_MODEL", "claude-haiku-4-5-20251001")
 
