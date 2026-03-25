@@ -1,0 +1,41 @@
+---
+title: Persistent Memory
+description: Daily logs, long-term memory, and project state
+icon: database
+---
+
+Octo maintains persistent memory across sessions. Agents can write observations, and the system tracks project state automatically.
+
+## Memory Types
+
+### Daily Logs
+
+The `write_memory` tool appends timestamped entries to `.octo/memory/YYYY-MM-DD.md`. These capture day-to-day observations, decisions, and findings.
+
+```
+.octo/memory/
+├── 2025-01-15.md
+├── 2025-01-16.md
+└── 2025-01-17.md
+```
+
+### Long-Term Memory
+
+A curated `MEMORY.md` file updated via `update_long_term_memory`. This contains stable patterns, architectural decisions, and recurring solutions — information that stays relevant over time.
+
+### Project State
+
+`STATE.md` captures the current position of your project:
+- Active plan and progress
+- Key decisions made
+- Open questions
+- Next steps
+
+The STATE.md is loaded into the system prompt, giving agents context about where things stand.
+
+## How Agents Use Memory
+
+- The supervisor has access to `write_memory`, `update_long_term_memory`, and `update_state` tools
+- Memory and state are loaded into the system prompt at startup
+- Agents reference past memory when planning and making decisions
+- `/compact` preserves key context even when older messages are summarized

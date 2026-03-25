@@ -1,0 +1,109 @@
+---
+title: Multi-Agent Supervisor
+description: How Octo routes requests to specialist agents
+icon: diagram-project
+---
+
+Octo uses a **supervisor pattern** — a central agent that receives all user messages and routes them to the right specialist. The supervisor manages task plans, writes memories, schedules tasks, and coordinates between agents.
+
+## Agent Types
+
+<CardGroup cols={3}>
+  <Card title="Project Workers" icon="code">
+    One per registered project. Wraps `claude -p` for full codebase access via Claude Code CLI.
+  </Card>
+  <Card title="Standard Agents" icon="robot">
+    Loaded from AGENT.md files. Get MCP tools + built-in tools. Best for focused tasks.
+  </Card>
+  <Card title="Deep Research Agents" icon="microscope">
+    Powered by `deepagents`. Persistent workspaces, planning middleware, and summarization.
+  </Card>
+</CardGroup>
+
+## How Routing Works
+
+The supervisor reads the user's message and decides which agent to delegate to based on:
+
+1. **Agent descriptions** — each agent declares what it's good at in its AGENT.md
+2. **Conversation context** — what's been discussed so far
+3. **Available tools** — which agent has the right tools for the job
+
+The supervisor can also handle simple requests directly without delegating.
+
+## Agent Sources
+
+Agents are loaded from two sources at startup:
+
+### Project Agents
+
+Configured via `AGENT_DIRS` in `.env`:
+
+```env
+AGENT_DIRS=/path/to/project-a/.claude/agents:/path/to/project-b/.claude/agents
+```
+
+Each directory is scanned for `*/AGENT.md` files. These become standard agents with access to MCP tools and built-in tools.
+
+### Octo-Native Agents
+
+Stored in `.octo/agents/*/AGENT.md`. These are managed by Octo itself — create them with the `/create-agent` wizard or manually.
+
+## Built-in Tools
+
+Available to all agents (configurable per agent via `tools:` in AGENT.md):
+
+| Tool | Description |
+|---|---|
+| `Read` | Read file contents |
+| `Grep` | Search file contents with regex |
+| `Glob` | Find files by pattern |
+| `Edit` | Edit files with string replacement |
+| `Bash` | Execute shell commands |
+| `claude_code` | Delegate to Claude Code CLI (`claude -p`) |
+
+## Agent Lifecycle Tools
+
+Every worker agent automatically receives two lifecycle tools (even if not listed in AGENT.md):
+
+| Tool | Description |
+|---|---|
+| `task_complete(summary)` | Signal that work is done. The summary is the **only** thing the user sees — without this, the agent's work is lost. |
+| `escalate_question(question)` | Ask the user a question when blocked. The question is relayed through the supervisor. |
+
+<Note>
+These tools are injected into every agent's system prompt automatically. Agents are instructed to always call `task_complete` before finishing — never silently transfer back to the supervisor.
+</Note>
+
+## Supervisor-Only Tools
+
+The supervisor has additional tools not available to workers:
+
+| Tool | Description |
+|---|---|
+| `write_todos` / `read_todos` | Task planning and progress tracking |
+| `write_memory` / `update_long_term_memory` | Persistent memory across sessions |
+| `update_state` | Update project STATE.md |
+| `schedule_task` | Schedule cron jobs |
+| `dispatch_background` | Spawn a [background worker](/features/background-workers) task |
+| `send_file` | Send files via Telegram |
+
+## Direct Agent Access
+
+Skip the supervisor and send a prompt directly to a specific agent:
+
+```
+/<agent-name> your prompt here
+```
+
+List all loaded agents with `/agents`.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Create an Agent" icon="wrench" href="/octo/guides/creating-agents">
+    Build your own specialist agent
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/octo/architecture/overview">
+    Understand the full graph structure
+  </Card>
+</CardGroup>

@@ -1,0 +1,270 @@
+---
+title: Virtual Persona Setup
+description: Step-by-step guide to configuring VP and running your first test
+icon: wand-magic-sparkles
+---
+
+This guide walks you through setting up Virtual Persona from scratch — configuring your identity, generating your persona, enabling monitoring, and gradually granting auto-respond access.
+
+## Prerequisites
+
+<Check>Teams MCP server connected and authenticated (`msteams` in `/mcp`)</Check>
+<Check>Telegram transport configured (for receiving private VP notifications)</Check>
+<Check>At least 20+ recent Teams conversations (for quality persona generation)</Check>
+
+## Step 1: Configure Your Identity
+
+Add your email address(es) to `.env` so VP knows which messages are yours:
+
+```env
+VP_SELF_EMAILS=you@company.com
+```
+
+Multiple emails? Comma-separate them:
+
+```env
+VP_SELF_EMAILS=you@company.com,you@personal.com
+```
+
+<Warning>
+This is required. Without `VP_SELF_EMAILS`, VP can't distinguish your messages from incoming ones and will try to process your own messages.
+</Warning>
+
+## Step 2: Enable VP
+
+Start Octo and run:
+
+```
+/vp enable
+```
+
+This scaffolds all data files in `.octo/virtual-persona/` and starts the polling loop. Check that everything is running:
+
+```
+/vp status
+```
+
+You should see:
+- VP enabled: **yes**
+- Poller running: **yes**
+- Allow list: **0 users** (this is correct — monitor-only mode)
+
+## Step 3: Generate Your Persona
+
+This is the most important step. VP needs to learn your communication style from your actual conversations.
+
+```
+/vp persona generate Your Name
+```
+
+The pipeline takes several minutes and runs through five phases:
+
+1. **Fetching conversations** — pulls 30-50 Teams chats via MCP
+2. **Per-conversation analysis** — analyzes each chat individually (you'll see progress)
+3. **Web research** — searches for your public presence (articles, talks, GitHub)
+4. **Synthesis** — merges everything into a communication profile
+5. **Prompt generation** — creates the system prompt that defines your VP voice
+
+<Info>
+Persona generation uses Octo's full agent stack for web research, synthesis, and prompt generation. This gives much richer results than simple LLM calls.
+</Info>
+
+### Review the Results
+
+```
+/vp persona show       # Preview the generated prompt
+/vp persona analysis   # See your communication profile summary
+```
+
+The generated files are human-editable:
+- **Prompt**: `.octo/virtual-persona/system-prompt.md` — edit to fine-tune your voice
+- **Analysis**: `.octo/virtual-persona/communication-analysis.json` — your behavioral profile
+- **Web research**: `.octo/virtual-persona/web-research.md` — public presence findings
+
+<Tip>
+Re-run `/vp persona generate` any time. Each run replaces the previous persona. You can also manually edit `system-prompt.md` for fine-tuning — VP loads it fresh on each message.
+</Tip>
+
+## Step 4: Monitor Mode (Passive)
+
+At this point VP is running but in **monitor-only mode**. For every incoming Teams message:
+
+1. VP reads and classifies it
+2. If it needs a response, VP generates a suggested answer via Octo
+3. The suggestion is sent to you privately (Telegram/console) — **never to the sender**
+4. You decide whether to reply yourself or ignore it
+
+Check what VP is seeing:
+
+```
+/vp audit 5            # Last 5 decisions
+/vp stats 1            # Today's stats
+/vp threads 5          # Classified thread topics
+```
+
+<Info>
+Monitor mode is the safest way to start. You see every VP decision without any risk of unwanted messages being sent. Stay in this mode until you're comfortable with VP's classification accuracy.
+</Info>
+
+## Step 5: Allow Auto-Responses
+
+Once you trust VP's judgment for specific people, grant them auto-respond access:
+
+```
+/vp allow alice@company.com
+```
+
+Now when Alice messages you, VP will auto-respond if confidence is ≥80%.
+
+### Confidence Tuning
+
+Adjust per-user confidence with modifiers:
+
+```
+/vp allow alice@company.com +10     # Alice gets a confidence boost
+/vp allow bob@company.com -15       # Be more conservative with Bob
+```
+
+### Dry-Run Testing
+
+Test VP's decision for a specific person without sending anything:
+
+```
+/vp test alice@company.com "How do I set up LangGraph agents?"
+```
+
+This shows: access decision, confidence score, category, and reasoning.
+
+## Step 6: Handle Escalations
+
+When VP can't handle a message confidently, it escalates silently:
+
+- You receive a private Telegram notification with full context, confidence score, and a suggested answer
+- The thread is locked — VP won't respond until you release it
+- The sender sees nothing — they're just waiting for your reply
+
+### Responding via Telegram
+
+The fastest way to handle escalations is to **reply directly to the Telegram notification**:
+
+- **Reply with text** — your reply is sent to the Teams chat, delegation auto-released
+- **Reply "ignore"** — the chat is muted, delegation released
+
+No need to open Teams or run slash commands — just reply naturally.
+
+### Manual Release
+
+If you handled it in Teams directly:
+
+```
+/vp release <chat_id>     # Release a specific thread
+/vp release all            # Release all locked threads
+```
+
+View all locked threads:
+
+```
+/vp delegated
+```
+
+## Step 7: Priority Users & Ignoring Chats
+
+### Priority Users
+
+Some contacts should never be ignored — their messages should always be processed even in muted chats:
+
+```
+/vp priority add boss@company.com
+/vp priority                        # List priority users
+```
+
+### Ignoring Noisy Chats
+
+Mute bot channels, automated notifications, or large group chats:
+
+```
+/vp ignore <chat_id> "Bot notifications"
+/vp ignored                         # List ignored chats
+/vp unignore <chat_id>              # Unmute
+```
+
+<Tip>
+Run `/vp sync` first to see chat IDs in the logs, then copy the ID of the chat you want to ignore.
+</Tip>
+
+## Step 8: People Profiles
+
+VP tracks interaction patterns. View someone's profile:
+
+```
+/vp profile alice@company.com
+```
+
+Set a tone override if VP's default isn't right for someone:
+
+```
+/vp profile alice@company.com tone semi_formal
+```
+
+Available tones: `casual_technical` (default for engineers), `casual`, `semi_formal`
+
+## Configuration Reference
+
+All VP settings via `.env`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `VP_ENABLED` | `true` | Master switch |
+| `VP_SELF_EMAILS` | *(empty)* | Your email(s), comma-separated |
+| `VP_POLL_INTERVAL` | `2m` | How often to check Teams (`30s`, `2m`, `1h`, or bare seconds) |
+| `VP_ACTIVE_HOURS_START` | `08:00` | Start of active hours (local time) |
+| `VP_ACTIVE_HOURS_END` | `22:00` | End of active hours (local time) |
+
+## Gradual Rollout Strategy
+
+<Steps>
+  <Step title="Week 1: Monitor Only">
+    Enable VP with an empty allow list. Watch decisions via `/vp audit` and `/vp stats`. Tune the persona prompt if needed.
+  </Step>
+
+  <Step title="Week 2: Allow Close Collaborators">
+    Add 2-3 people you work with daily. Monitor their auto-responses via `/vp audit`. Adjust confidence modifiers.
+  </Step>
+
+  <Step title="Week 3+: Expand Gradually">
+    Add more people as you gain confidence in VP's accuracy. Use `/vp block` for anyone who should always go to you directly.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="VP poller starts but no messages are processed">
+    Check that `VP_SELF_EMAILS` is set correctly in `.env`. Without it, VP may skip all messages or try to process your own.
+  </Accordion>
+
+  <Accordion title="Persona generation finds no conversations">
+    Ensure the Teams MCP server is authenticated. Run `/mcp` to check server status. You may need to re-authenticate with `mcp__msteams__login`.
+  </Accordion>
+
+  <Accordion title="VP responses don't sound like me">
+    Re-run `/vp persona generate` with more conversations available, or manually edit `.octo/virtual-persona/system-prompt.md` to adjust phrasing and rules.
+  </Accordion>
+
+  <Accordion title="Too many escalations">
+    VP is being too conservative. Lower the confidence threshold by adding positive modifiers to your allowed users: `/vp allow user@company.com +15`
+  </Accordion>
+
+  <Accordion title="VP responded when it shouldn't have">
+    Add the user to the block list: `/vp block user@company.com`. Review the audit log: `/vp audit 10`. Consider lowering their confidence modifier.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="VP Feature Reference" icon="user-secret" href="/octo/features/virtual-persona">
+    Full VP architecture and command reference
+  </Card>
+  <Card title="Proactive AI" icon="bell" href="/octo/features/proactive-ai">
+    Heartbeat and cron — Octo's other proactive features
+  </Card>
+</CardGroup>

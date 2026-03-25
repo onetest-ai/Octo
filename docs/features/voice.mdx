@@ -1,0 +1,187 @@
+---
+title: Voice
+description: Multi-engine speech-to-text and text-to-speech with voiceover preparation
+icon: microphone
+---
+
+Octo supports voice interaction with pluggable engines — use cloud APIs (ElevenLabs) or local models (Whisper, Kokoro) for privacy, cost savings, and offline use.
+
+## Engines
+
+<CardGroup cols={2}>
+  <Card title="ElevenLabs (Cloud)" icon="cloud">
+    High-quality TTS and STT via API. Requires `ELEVENLABS_API_KEY`.
+  </Card>
+  <Card title="Local Commands" icon="computer">
+    Any local STT/TTS tool — Whisper, Kokoro, Piper, Coqui, etc. Runs as a subprocess via configurable command.
+  </Card>
+</CardGroup>
+
+You can mix engines freely — for example, local Whisper for STT and cloud ElevenLabs for TTS.
+
+## Quick Setup
+
+<Tabs>
+  <Tab title="ElevenLabs (default)">
+    No engine config needed — just add your API key:
+
+    ```env
+    ELEVENLABS_API_KEY=your_key_here
+    ELEVENLABS_VOICE_ID=yl2ZDV1MzN4HbQJbMihG   # optional, uses default voice
+    ```
+  </Tab>
+
+  <Tab title="Local Whisper + Kokoro">
+    Point to your local engine commands:
+
+    ```env
+    VOICE_STT_ENGINE=whisper
+    VOICE_TTS_ENGINE=kokoro
+
+    # Full command — Octo appends the input/output file path as the last argument
+    WHISPER_COMMAND=C:\Whisper_Workspace\venv\Scripts\python.exe C:\Whisper_Workspace\transcribe.py
+    KOKORO_COMMAND=C:\TTS_Workspace\venv\Scripts\python.exe C:\TTS_Workspace\synthesize.py
+    ```
+  </Tab>
+
+  <Tab title="Mixed (Whisper + ElevenLabs)">
+    Local STT for privacy, cloud TTS for quality:
+
+    ```env
+    VOICE_STT_ENGINE=whisper
+    VOICE_TTS_ENGINE=elevenlabs
+
+    WHISPER_COMMAND=/path/to/venv/bin/python /path/to/transcribe.py
+    ELEVENLABS_API_KEY=your_key_here
+    ```
+  </Tab>
+</Tabs>
+
+## Subprocess Protocol
+
+Local engines are invoked as subprocesses with a simple file-based interface. This means you can use **any** STT/TTS tool — just wrap it in a script that follows the protocol.
+
+### STT (Speech-to-Text)
+
+```
+{WHISPER_COMMAND} <input_audio_file>
+```
+
+- Octo writes the audio to a temp `.ogg` file and appends the path as the last argument
+- Your script reads the audio file and prints transcribed text to **stdout**
+- Exit code 0 = success
+
+### TTS (Text-to-Speech)
+
+```
+{KOKORO_COMMAND} <output_audio_file>
+```
+
+- Octo creates a temp `.wav` path and appends it as the last argument
+- Text to synthesize is sent via **stdin**
+- Your script reads stdin, generates audio, and writes it to the output file
+- Exit code 0 = success
+
+<Note>
+The configurable command approach gives maximum flexibility — your scripts handle model selection, voice choice, language, speed, and any other engine-specific options. Octo doesn't need to know about those details.
+</Note>
+
+### Example Scripts
+
+**Whisper STT** (`transcribe.py`):
+
+```python
+import sys, whisper
+model = whisper.load_model("base")
+result = model.transcribe(sys.argv[1])
+print(result["text"])
+```
+
+**Kokoro TTS** (`synthesize.py`):
+
+```python
+import sys, numpy as np, soundfile as sf
+from kokoro import KPipeline
+text = sys.stdin.read()
+pipeline = KPipeline(lang_code="en-us")
+segments = [audio for _, _, audio in pipeline(text, voice="af_heart", speed=1.0)]
+sf.write(sys.argv[1], np.concatenate(segments), 24000)
+```
+
+## Voiceover Text Preparation
+
+Raw AI responses often contain markdown, file paths, code blocks, and URLs — these sound unnatural when spoken aloud. Octo automatically rewrites text into natural speech before synthesis.
+
+<Steps>
+  <Step title="AI generates response">
+    Technical text with markdown, code blocks, file paths.
+  </Step>
+  <Step title="Voiceover prep (LLM rewrite)">
+    A cheap model rewrites the text as a natural voiceover script — removing formatting, summarizing technical details, keeping the key message.
+  </Step>
+  <Step title="TTS synthesis">
+    The clean voiceover text is sent to the TTS engine.
+  </Step>
+</Steps>
+
+Voiceover prep is **on by default** for interactive voice (CLI and Telegram). For pre-prepared text like video production scripts, it can be skipped programmatically via `synthesize(text, prep=False)`.
+
+## Usage
+
+### CLI
+
+Toggle voice mode:
+
+```
+/voice on       # enable TTS for responses
+/voice off      # disable TTS
+/voice status   # show active engines and readiness
+```
+
+Or start with voice enabled:
+
+```bash
+octo --voice
+```
+
+When voice is on, every AI response is automatically spoken after display.
+
+### Telegram
+
+When using the Telegram transport:
+
+- **Incoming voice messages** are transcribed using the configured STT engine
+- **Responses** are sent back as voice messages (with voiceover prep)
+- Text responses are always sent alongside voice for accessibility
+
+The flow is fully automatic — send a voice message, get a voice reply.
+
+## Configuration Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `VOICE_STT_ENGINE` | `elevenlabs` | STT engine: `elevenlabs` or `whisper` |
+| `VOICE_TTS_ENGINE` | `elevenlabs` | TTS engine: `elevenlabs` or `kokoro` |
+| `WHISPER_COMMAND` | — | Full command for local STT (e.g. `python transcribe.py`) |
+| `KOKORO_COMMAND` | — | Full command for local TTS (e.g. `python synthesize.py`) |
+| `ELEVENLABS_API_KEY` | — | ElevenLabs API key (required for cloud engines) |
+| `ELEVENLABS_VOICE_ID` | — | ElevenLabs voice ID (optional, uses default) |
+
+### Timeouts
+
+| Engine | Timeout | Notes |
+|---|---|---|
+| STT (local command) | 120s | Whisper on `base` model typically takes 5-15s |
+| TTS (local command) | 180s | Depends on text length and model size |
+| Voiceover prep | LLM default | Uses `LOW` tier model for cost efficiency |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Telegram Setup" icon="paper-plane" href="/octo/getting-started/telegram-setup">
+    Add Telegram transport for voice messages
+  </Card>
+  <Card title="Configuration" icon="gear" href="/octo/getting-started/configuration">
+    Full environment variable reference
+  </Card>
+</CardGroup>

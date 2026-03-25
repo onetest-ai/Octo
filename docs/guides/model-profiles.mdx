@@ -1,0 +1,60 @@
+---
+title: Model Profiles
+description: Control cost vs quality tradeoffs with built-in presets
+icon: sliders
+---
+
+Model profiles are presets that map model tiers to agent roles, letting you balance cost and quality with a single setting.
+
+## Built-in Profiles
+
+| Profile | Supervisor | Workers | High-tier Agents | Use Case |
+|---|---|---|---|---|
+| `quality` | high | default | high | Complex tasks, important work |
+| `balanced` | default | low | high | Daily use, good tradeoff |
+| `budget` | low | low | default | Cost-sensitive, simple tasks |
+
+## Configuration
+
+Set the default profile in `.env`:
+
+```env
+MODEL_PROFILE=balanced
+```
+
+## Runtime Switching
+
+Switch profiles during a conversation:
+
+```
+/profile              # show current profile
+/profile quality      # switch to quality
+/profile budget       # switch to budget
+```
+
+The change takes effect on the next agent invocation.
+
+## How Tiers Map to Models
+
+Each tier resolves to a model from your `.env`:
+
+```env
+HIGH_TIER_MODEL=claude-opus-4-5-20250929
+DEFAULT_MODEL=claude-sonnet-4-5-20250929
+LOW_TIER_MODEL=claude-haiku-4-5-20251001
+```
+
+So with the `balanced` profile:
+- **Supervisor** uses Sonnet (default tier)
+- **Workers** use Haiku (low tier) — fast and cheap
+- **High-tier agents** (deep research) use Opus (high tier) — maximum quality
+
+## Switching Models
+
+Change the active model directly:
+
+```
+/model claude-opus-4-5-20250929
+```
+
+This overrides the profile for the current session.

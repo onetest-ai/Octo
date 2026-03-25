@@ -1,0 +1,100 @@
+---
+title: Proactive AI
+description: Heartbeat timer and cron scheduler — Octo reaches out first
+icon: bell
+---
+
+Octo doesn't just respond to prompts — it can reach out proactively when something needs attention.
+
+## Heartbeat
+
+A periodic timer (default every 30 minutes) that checks if there's anything worth telling you.
+
+### How It Works
+
+<Steps>
+  <Step title="Phase 1: Cheap Check">
+    A low-tier LLM reads `.octo/persona/HEARTBEAT.md` (your standing instructions) and recent context. It decides: **is action needed?**
+  </Step>
+
+  <Step title="Phase 2: Full Graph (if needed)">
+    Only when Phase 1 says yes, the full supervisor graph is invoked. This keeps costs low — most heartbeat ticks are Phase 1 only.
+  </Step>
+
+  <Step title="Delivery">
+    Results are delivered via CLI output and/or Telegram message. The `HEARTBEAT_OK` sentinel suppresses delivery when there's nothing to say (no notification spam).
+  </Step>
+</Steps>
+
+### Configuration
+
+```env
+HEARTBEAT_INTERVAL=30m                  # 30m, 1h, 60s, etc.
+HEARTBEAT_ACTIVE_HOURS_START=08:00      # local time
+HEARTBEAT_ACTIVE_HOURS_END=22:00        # local time
+```
+
+### Standing Instructions
+
+Edit `.octo/persona/HEARTBEAT.md` to tell Octo what to check for. Example:
+
+```markdown
+# Heartbeat Instructions
+
+- Check if any scheduled tasks are overdue
+- Monitor GitHub issues for new critical bugs
+- Remind me about standup at 9:45 AM
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `/heartbeat` | Show heartbeat status |
+| `/heartbeat test` | Force a heartbeat tick now |
+
+## Cron Scheduler
+
+A persistent job scheduler for recurring and one-shot tasks.
+
+### Job Types
+
+| Type | Example | Description |
+|---|---|---|
+| `at` | `in 2h`, `15:00` | One-shot, fires once |
+| `every` | `30m`, `1d` | Recurring interval |
+| `cron` | `0 9 * * MON-FRI` | 5-field cron expression |
+
+### Commands
+
+```
+/cron                    # list all jobs
+/cron add <spec> <task>  # schedule a new job
+/cron remove <id>        # delete a job
+/cron pause <id>         # pause without deleting
+/cron resume <id>        # resume a paused job
+```
+
+### Self-Scheduling
+
+Agents can schedule their own follow-ups using the `schedule_task` tool. For example, a research agent might say: "I'll check back in 2 hours to see if the API data has updated."
+
+Jobs are stored in `.octo/cron.json` and survive restarts.
+
+## Error Recovery
+
+Both heartbeat and cron jobs use `invoke_with_retry` — the same retry logic as interactive chat. Transient failures are handled automatically:
+
+| Error Type | Recovery |
+|---|---|
+| **Connection dropped** | Reset Bedrock client, clean orphaned tool calls, retry with backoff |
+| **Timeout** | Retry with backoff; auto-compact context on 2nd timeout |
+| **Rate limit** | Wait with longer backoff (5s, 15s, 45s) |
+| **Context overflow** | Auto-compact conversation, then retry |
+| **Orphaned tool calls** | Inject synthetic tool responses, then retry |
+
+Up to 3 retries with exponential backoff (3s → 9s → 27s). If all retries fail, the error is logged and the job continues on its next schedule.
+
+<Tip>
+Combine heartbeat with cron for powerful workflows: use heartbeat for general monitoring and cron for specific scheduled tasks.
+</Tip>

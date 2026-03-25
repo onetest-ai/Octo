@@ -1,0 +1,90 @@
+---
+title: Langfuse Integration
+description: Trace AI decisions with Langfuse observability
+icon: chart-mixed
+---
+
+[Langfuse](https://langfuse.com) provides observability for LLM applications — traces, token usage, latency, and cost analytics. Octo integrates Langfuse as an optional callback on every LLM call.
+
+## Setup
+
+<Steps>
+  <Step title="Create a Langfuse account">
+    Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) or self-host.
+  </Step>
+  <Step title="Create a project and get API keys">
+    In the Langfuse dashboard, create a project and copy the **Public Key** and **Secret Key**.
+  </Step>
+  <Step title="Add to .env">
+    ```env
+    LANGFUSE_ENABLED=true
+    LANGFUSE_PUBLIC_KEY=pk-lf-...
+    LANGFUSE_SECRET_KEY=sk-lf-...
+    LANGFUSE_HOST=https://cloud.langfuse.com
+    ```
+  </Step>
+  <Step title="Restart Octo">
+    On startup you'll see "Langfuse tracing enabled" if configured correctly.
+  </Step>
+</Steps>
+
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `LANGFUSE_ENABLED` | Yes | `false` | Toggle tracing on/off (`true`, `1`, or `yes`) |
+| `LANGFUSE_PUBLIC_KEY` | When enabled | — | Langfuse project public key |
+| `LANGFUSE_SECRET_KEY` | When enabled | — | Langfuse project secret key |
+| `LANGFUSE_HOST` | No | `https://cloud.langfuse.com` | Langfuse server URL (for self-hosted) |
+
+## What Gets Traced
+
+Every LLM call through the LangGraph supervisor and worker agents is traced, including:
+
+- **Input/output messages** — full conversation context sent to the model
+- **Tool calls** — which tools were invoked, with arguments and results
+- **Token usage** — input/output/total tokens per call
+- **Latency** — time per LLM call and per tool execution
+- **Session grouping** — all calls within a conversation thread are grouped by session ID
+
+## Session Tracking
+
+Traces are automatically grouped by Octo's conversation thread ID. Each session in Langfuse corresponds to one Octo chat session, making it easy to analyze full conversation flows.
+
+## Analyzing Traces
+
+Common things to look for in the Langfuse dashboard:
+
+<AccordionGroup>
+  <Accordion title="Token waste" icon="coins">
+    Check the **input tokens** per call. If a simple question triggers 200K+ input tokens, context is bloated. Look at the input messages to identify large tool results or redundant memory.
+  </Accordion>
+
+  <Accordion title="Excessive tool calls" icon="screwdriver-wrench">
+    Count the number of LLM calls per user message. More than 5-6 calls for a simple question suggests the agent is over-investigating. The supervisor's efficiency instructions should prevent this.
+  </Accordion>
+
+  <Accordion title="Cost per interaction" icon="dollar-sign">
+    Use Langfuse's cost tracking to identify expensive patterns. Agent handoffs, deep research, and large context windows are the main cost drivers.
+  </Accordion>
+
+  <Accordion title="Latency breakdown" icon="clock">
+    Identify slow tool calls or LLM responses. Bedrock cross-region inference can add latency — check if calls are timing out.
+  </Accordion>
+</AccordionGroup>
+
+## Disabling
+
+Set `LANGFUSE_ENABLED=false` in `.env` (or remove it entirely). No code changes needed — Octo skips the Langfuse callback when disabled.
+
+<Note>
+Langfuse is a core dependency (`langfuse>=2.0` in `pyproject.toml`), so no extra install step is required.
+</Note>
+
+## Self-Hosting
+
+For teams that need data privacy, Langfuse supports [self-hosting](https://langfuse.com/docs/deployment/self-host). Point `LANGFUSE_HOST` to your instance:
+
+```env
+LANGFUSE_HOST=https://langfuse.internal.yourcompany.com
+```

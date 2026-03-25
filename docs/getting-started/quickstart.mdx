@@ -1,0 +1,152 @@
+---
+title: Quick Start
+description: Install Octo and start chatting in under 2 minutes
+icon: rocket
+---
+
+Get up and running with Octo in under 2 minutes. This guide walks you through installation, setup, and your first conversation.
+
+## Prerequisites
+
+### Required
+
+<Check>**Python 3.11+** — the runtime for Octo itself</Check>
+<Check>**Node.js 18+** — required for MCP servers (most use `npx`)</Check>
+<Check>**At least one LLM provider** — Anthropic, AWS Bedrock, OpenAI, Azure, or GitHub Models</Check>
+
+### Optional
+
+<Check>**[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** — enables project workers that delegate tasks via `claude -p`. Without it, Octo still works with standard and deep research agents.</Check>
+<Check>**[skills.sh](https://skills.sh)** — the open skills ecosystem. Install the CLI with `npm install -g skills` to use `/skills import` and `/skills find` from chat. Local skills (`.octo/skills/`) work without it.</Check>
+
+## Installation
+
+<Warning>
+Do not install Octo globally. It has many dependencies that can conflict with
+other packages. Always use a virtual environment.
+</Warning>
+
+<Tabs>
+  <Tab title="pip">
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate   # Windows: .venv\Scripts\activate
+    pip install "octo-agent[cli]"
+    ```
+  </Tab>
+  <Tab title="uv">
+    ```bash
+    uv venv
+    source .venv/bin/activate
+    uv pip install "octo-agent[cli]"
+    ```
+  </Tab>
+  <Tab title="From source">
+    ```bash
+    git clone https://github.com/onetest-ai/Octo.git
+    cd Octo
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -e ".[cli]"
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+The PyPI package is called `octo-agent`, but the CLI command and Python import are just `octo`.
+
+**Installation extras:**
+
+| Extra | What it adds |
+|-------|-------------|
+| `cli` | Rich terminal UI, Click, prompt_toolkit **(recommended)** |
+| `telegram` | Telegram bot transport |
+| `s3` | S3-compatible storage backend |
+| `postgres` | PostgreSQL checkpointing |
+| `all` | Everything above |
+
+Bare `pip install octo-agent` installs the core engine only — use `[cli]` for the terminal experience, or `[all]` for everything.
+</Info>
+
+<Steps>
+  <Step title="Run the setup wizard">
+    ```bash
+    octo init
+    ```
+
+    The wizard walks you through:
+    - Provider selection (Anthropic, Bedrock, OpenAI, Azure, GitHub Models)
+    - Credential entry and validation
+    - Workspace scaffolding (creates `.octo/` directory)
+  </Step>
+
+  <Step title="Start chatting">
+    ```bash
+    octo
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+For a faster setup, use QuickStart mode — just 3 prompts (pick provider, paste key, done):
+
+```bash
+octo init --quick
+```
+</Tip>
+
+## Non-Interactive Setup
+
+For CI/CD or Docker environments:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... octo init --quick --provider anthropic --no-validate --force
+```
+
+## Health Check
+
+After setup, verify everything is working:
+
+```bash
+octo doctor
+```
+
+This runs 8 checks with PASS/FAIL output. Fix issues with:
+
+```bash
+octo doctor --fix    # re-runs setup wizard on failures
+octo doctor --json   # machine-readable output
+```
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card
+    title="Configuration Deep Dive"
+    icon="gear"
+    href="/octo/getting-started/configuration"
+  >
+    Model tiers, profiles, and all environment variables
+  </Card>
+  <Card
+    title="Set Up Telegram"
+    icon="paper-plane"
+    href="/octo/getting-started/telegram-setup"
+  >
+    Chat with Octo from your phone
+  </Card>
+  <Card
+    title="Explore Features"
+    icon="compass"
+    href="/octo/features/multi-agent"
+  >
+    Multi-agent supervisor, proactive AI, and more
+  </Card>
+  <Card
+    title="Create Your First Agent"
+    icon="robot"
+    href="/octo/guides/creating-agents"
+  >
+    Build a custom specialist agent
+  </Card>
+</CardGroup>

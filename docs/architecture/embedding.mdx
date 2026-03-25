@@ -1,0 +1,216 @@
+---
+title: Embeddable Engine
+description: Use Octo as a library in your own Python services
+icon: cube
+---
+
+Since v0.5.0, Octo ships a clean embeddable engine at `octo.core`. It has no environment variable reading, no CLI dependencies, and no side effects at import time — making it safe to embed in web services, workers, or test harnesses.
+
+## Quick Start
+
+```python
+import asyncio
+from octo.core import OctoEngine, OctoConfig
+from octo.core.storage import FilesystemStorage
+
+config = OctoConfig(
+    llm_provider="anthropic",
+    llm_credentials={"api_key": "sk-ant-..."},
+    default_model="claude-sonnet-4-5-20250929",
+    storage=FilesystemStorage(root="/path/to/.octo"),
+)
+
+engine = OctoEngine(config)
+
+async def main():
+    response = await engine.invoke("Hello!", thread_id="conv-123")
+    print(response.content)
+    await engine.close()
+
+asyncio.run(main())
+```
+
+## OctoConfig
+
+The configuration dataclass. Caller provides everything — no env var reading.
+
+### Required Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `llm_provider` | `str` | `"anthropic"`, `"openai"`, `"bedrock"`, `"azure"`, `"github"`, `"gemini"`, or `"local"` |
+| `llm_credentials` | `dict` | Provider-specific credentials (see below) |
+
+### Credential Keys by Provider
+
+| Provider | Required Keys | Optional Keys |
+|---|---|---|
+| Anthropic | `api_key` | — |
+| OpenAI | `api_key` | — |
+| Bedrock | `region`, `access_key_id`, `secret_access_key` | — |
+| Azure | `api_key`, `endpoint` | `api_version` |
+| GitHub | `api_key` | `base_url`, `anthropic_base_url` |
+| Gemini | `api_key` | — |
+| Local | — | `base_url`, `api_key` |
+
+### Optional Fields
+
+| Field | Default | Description |
+|---|---|---|
+| `default_model` | `claude-sonnet-4-5-20250929` | Model for general routing and chat |
+| `high_tier_model` | _(same as default)_ | Model for complex reasoning |
+| `low_tier_model` | _(same as default)_ | Model for summarization and cheap tasks |
+| `model_profile` | `"balanced"` | `"quality"`, `"balanced"`, or `"budget"` |
+| `storage` | `None` | `StorageBackend` instance for files, memory, skills |
+| `checkpoint_backend` | `"sqlite"` | `"sqlite"` or `"postgres"` |
+| `checkpoint_config` | `{}` | Backend-specific config (see below) |
+| `context_limit` | `200000` | Max context window tokens |
+| `tool_result_limit` | `40000` | Max chars for a single tool result |
+| `summarization_trigger_tokens` | `40000` | Token count to trigger auto-summarization |
+| `summarization_keep_tokens` | `8000` | Tokens of recent history to keep after summarization |
+| `supervisor_msg_char_limit` | `30000` | Per-message char limit for supervisor |
+| `preloaded_tools` | `[]` | Pre-created LangChain tools (skip MCP loading) |
+| `agent_configs` | `[]` | List of `AgentConfig` for custom agents |
+| `system_prompt` | `""` | Custom system prompt override |
+
+### Validation
+
+Config is validated automatically by `OctoEngine` on construction. Call `config.validate()` manually for early checks:
+
+```python
+from octo.core.config import OctoConfigError
+
+try:
+    config.validate()
+except OctoConfigError as e:
+    print(e)  # Lists all validation errors
+```
+
+## OctoEngine
+
+The main entry point. Build once per configuration, invoke per message.
+
+### Methods
+
+| Method | Description |
+|---|---|
+| `await engine.invoke(message, thread_id=...)` | Process one message. Returns `OctoResponse`. |
+| `async for event in engine.stream(message, thread_id=...)` | Stream response events (tokens, tool calls). |
+| `await engine.close()` | Clean up resources (DB connections, etc.) |
+| `engine.is_built` | Whether the graph has been lazily built yet. |
+
+### OctoResponse
+
+```python
+@dataclass
+class OctoResponse:
+    content: str                      # The assistant's reply
+    thread_id: str                    # Conversation identifier
+    context_tokens_used: int = 0      # Tokens consumed
+    context_tokens_limit: int = 200000
+    agent_name: str = ""              # Which agent produced the response
+    error: str | None = None          # Non-None if invocation failed
+    error_traceback: str | None = None
+```
+
+Errors are captured in the response (not raised), so callers can always inspect the result.
+
+## StorageBackend
+
+The `StorageBackend` protocol defines async file operations for memory, skills, and workspace files.
+
+### Built-in Backends
+
+<Tabs>
+  <Tab title="FilesystemStorage">
+    Local filesystem. No extra dependencies.
+
+    ```python
+    from octo.core.storage import FilesystemStorage
+
+    storage = FilesystemStorage(root="/path/to/.octo")
+    ```
+  </Tab>
+
+  <Tab title="S3Storage">
+    S3-compatible object storage. Requires the `s3` extra.
+
+    ```bash
+    pip install "octo-agent[s3]"
+    ```
+
+    ```python
+    from octo.core.storage import S3Storage
+
+    storage = S3Storage(
+        bucket="my-bucket",
+        prefix="octo/",
+        region="us-east-1",
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Protocol
+
+Any object implementing these async methods can be used as a storage backend:
+
+```python
+class StorageBackend(Protocol):
+    async def read(self, path: str) -> str: ...
+    async def write(self, path: str, content: str) -> None: ...
+    async def exists(self, path: str) -> bool: ...
+    async def glob(self, pattern: str) -> list[str]: ...
+```
+
+## Checkpointing
+
+Conversation state is persisted via LangGraph checkpointers.
+
+<Tabs>
+  <Tab title="SQLite (default)">
+    No extra dependencies. Path defaults to `<workspace>/.octo/octo.db`.
+
+    ```python
+    config = OctoConfig(
+        checkpoint_backend="sqlite",
+        checkpoint_config={"path": "/path/to/octo.db"},
+        ...
+    )
+    ```
+  </Tab>
+
+  <Tab title="PostgreSQL">
+    Requires the `postgres` extra.
+
+    ```bash
+    pip install "octo-agent[postgres]"
+    ```
+
+    ```python
+    config = OctoConfig(
+        checkpoint_backend="postgres",
+        checkpoint_config={"dsn": "postgresql://user:pass@host/db"},
+        ...
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Thread Safety
+
+<Warning>
+`OctoEngine` is **not** thread-safe. Each instance mutates global module state during graph build. Do not share engine instances across threads, and do not create multiple engines with different configs in the same process simultaneously.
+
+For multi-tenant scenarios, use one engine per process/worker.
+</Warning>
+
+## Installation
+
+The core engine is included in the base package:
+
+```bash
+pip install octo-agent           # Core engine only
+pip install "octo-agent[cli]"    # Core + CLI (Rich terminal)
+pip install "octo-agent[all]"    # Everything
+```

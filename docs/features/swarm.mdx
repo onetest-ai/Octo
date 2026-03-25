@@ -1,0 +1,195 @@
+---
+title: Swarm
+description: Connect multiple Octo instances across devices into a collaborative swarm
+icon: network-wired
+---
+
+<Info>
+  **Coming Soon** — Swarm is currently in development and will be available in an upcoming release.
+</Info>
+
+Swarm enables multiple Octo instances running on different physical devices to discover each other, communicate, and collaborate on tasks — forming a distributed AI team on your local network.
+
+## How It Works
+
+Each Octo instance runs an MCP server over HTTP. Peers connect as MCP clients. From the supervisor's perspective, peer Octo tools appear alongside regular MCP tools — no new protocol to learn.
+
+```
+                    MCP/HTTP
+  ┌──────────┐  <──────────>  ┌──────────┐
+  │  Atlas   │                │ Sentinel │
+  │  :9100   │                │  :9100   │
+  │ research │                │   ops    │
+  └────┬─────┘                └────┬─────┘
+       │        MCP/HTTP           │
+       └──────┬────────────────────┘
+              │
+     ┌────────┴────────┐
+     │  Telegram Group  │
+     │  (shared chat)   │
+     └─────────────────┘
+```
+
+<CardGroup cols={2}>
+  <Card title="MCP-over-HTTP" icon="plug">
+    Each Octo exposes tools via a FastMCP HTTP server. Peers connect as standard MCP clients — zero custom protocol needed.
+  </Card>
+  <Card title="Shared Telegram" icon="paper-plane">
+    All Octo bots join the same Telegram group. The supervisor handles unaddressed messages. @mention a specific Octo to talk to it directly.
+  </Card>
+  <Card title="Capability Routing" icon="route">
+    Each instance declares its capabilities. The supervisor routes tasks to the best-fit peer automatically.
+  </Card>
+  <Card title="Always On" icon="power-off">
+    Swarm instances run continuously, accept tasks from peers, and deliver results — even when no human is actively chatting.
+  </Card>
+</CardGroup>
+
+## Architecture
+
+### Communication Layers
+
+| Layer | Purpose | Protocol |
+|---|---|---|
+| Human to Octo | Commands, questions, results | Telegram group chat |
+| Octo to Octo (visible) | Delegation the human should see | Telegram @mentions in group |
+| Octo to Octo (silent) | Background tasks, heavy lifting | MCP-over-HTTP |
+
+### Peer Tools
+
+Each Octo exposes four tools to its swarm peers:
+
+| Tool | Description |
+|---|---|
+| `ask(question, context)` | Get an answer synchronously (uses the peer's full graph) |
+| `dispatch_task(task, context, priority)` | Queue a long-running task for background execution |
+| `check_task(task_id)` | Poll for the status and result of a dispatched task |
+| `get_info()` | Get peer name, capabilities, and current load |
+
+### Telegram Group Mode
+
+In group mode, multiple Octo bots share a single Telegram group with the human:
+
+- **Unaddressed message** — only the supervisor responds
+- **@mention a specific Octo** — that Octo responds
+- **Reply to a bot's message** — that bot handles the follow-up
+- **Name mention** (e.g., "sentinel, check the logs") — the named Octo responds
+
+All Octos listen to all messages, maintaining shared conversational context without any explicit sync.
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Core swarm settings
+SWARM_ENABLED=true              # Master toggle
+SWARM_NAME=atlas                # This instance's name in the swarm
+SWARM_PORT=9100                 # MCP HTTP server port
+SWARM_CAPABILITIES=research,coding  # Comma-separated capability tags
+
+# Role & Telegram group mode
+SWARM_ROLE=supervisor           # "supervisor" or "worker"
+SWARM_TELEGRAM_MODE=group       # "private" (default) or "group"
+SWARM_TELEGRAM_GROUP_ID=-100xxx # Telegram group chat ID
+```
+
+### Peer Registry
+
+Peers are configured in `.octo/swarm/peers.json`:
+
+```json
+[
+  {
+    "name": "sentinel",
+    "url": "http://192.168.1.42:9100/mcp/",
+    "capabilities": ["monitoring", "ops", "infrastructure"]
+  },
+  {
+    "name": "scholar",
+    "url": "http://192.168.1.43:9100/mcp/",
+    "capabilities": ["research", "analysis", "writing"]
+  }
+]
+```
+
+## Slash Commands
+
+| Command | Description |
+|---|---|
+| `/swarm` | Show swarm status (name, port, connected peers) |
+| `/swarm peers` | List all configured peers and their online status |
+| `/swarm add <name> <url>` | Add a new peer and rebuild the graph |
+| `/swarm remove <name>` | Remove a peer and rebuild the graph |
+| `/swarm ping` | Check all peers' health immediately |
+
+## Example: Two-Instance Setup
+
+### Instance 1 — Atlas (MacBook, supervisor)
+
+```bash .env
+SWARM_ENABLED=true
+SWARM_NAME=atlas
+SWARM_PORT=9100
+SWARM_ROLE=supervisor
+SWARM_CAPABILITIES=research,coding
+SWARM_TELEGRAM_MODE=group
+SWARM_TELEGRAM_GROUP_ID=-100123456789
+TELEGRAM_BOT_TOKEN=<atlas-bot-token>
+```
+
+### Instance 2 — Sentinel (Raspberry Pi, worker)
+
+```bash .env
+SWARM_ENABLED=true
+SWARM_NAME=sentinel
+SWARM_PORT=9100
+SWARM_ROLE=worker
+SWARM_CAPABILITIES=monitoring,ops,infrastructure
+SWARM_TELEGRAM_MODE=group
+SWARM_TELEGRAM_GROUP_ID=-100123456789
+TELEGRAM_BOT_TOKEN=<sentinel-bot-token>
+```
+
+Add each as a peer on the other:
+
+```
+# On Atlas
+/swarm add sentinel http://192.168.1.42:9100/mcp/
+
+# On Sentinel
+/swarm add atlas http://192.168.1.10:9100/mcp/
+```
+
+Now in the shared Telegram group:
+
+```
+Human:    "What's the server uptime?"
+@atlas:   "Let me check with Sentinel..."
+@atlas:   "@sentinel check server uptime and recent logs"
+@sentinel: "Server uptime: 47 days. Last restart: Jan 2. No errors in logs."
+@atlas:   "Server's been up 47 days with clean logs."
+```
+
+## Security
+
+<Warning>
+  The current implementation has **no authentication** between peers. It is designed for trusted local networks only. A future release will add `SWARM_API_KEY` bearer token authentication for peer-to-peer communication.
+</Warning>
+
+## Roadmap
+
+<Steps>
+  <Step title="Static Peers (Current)">
+    Manual peer configuration via `peers.json` and `/swarm add`. Health monitoring via HTTP.
+  </Step>
+  <Step title="mDNS Discovery">
+    Zero-config peer discovery on the local network using mDNS/Bonjour (`_octo-mcp._tcp.local`).
+  </Step>
+  <Step title="Authentication">
+    `SWARM_API_KEY` bearer token for peer-to-peer auth via FastMCP's built-in auth framework.
+  </Step>
+  <Step title="Shared Task Board">
+    Distributed task queue where any Octo can post work and peers claim based on capability and load.
+  </Step>
+</Steps>

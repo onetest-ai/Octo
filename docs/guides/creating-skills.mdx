@@ -1,0 +1,116 @@
+---
+title: Creating Skills
+description: Write reusable prompt modules with SKILL.md
+icon: puzzle-piece
+---
+
+Skills are reusable prompt modules that extend Octo's capabilities. Each skill is a directory containing a `SKILL.md` file with YAML frontmatter.
+
+## Interactive Wizard
+
+The fastest way to create a skill:
+
+```
+/create-skill
+```
+
+The wizard guides you through:
+
+<Steps>
+  <Step title="Name and description">
+    Validated format with collision detection against existing skills. Description doubles as the trigger — describe WHEN to use the skill.
+  </Step>
+  <Step title="Purpose">
+    Detailed description of what the skill does, its workflow, and expected input/output.
+  </Step>
+  <Step title="Settings">
+    Model invocation (can the LLM trigger it?), permissions (filesystem, network, shell), and tags.
+  </Step>
+  <Step title="AI generation">
+    An LLM generates the full skill body based on your description, using existing skills as examples. The SKILL.md is previewed before saving.
+  </Step>
+</Steps>
+
+Skills are immediately available after the graph rebuilds.
+
+## Manual Creation
+
+## SKILL.md Format
+
+```markdown
+---
+name: summarize-pdf
+description: Summarize PDF documents into concise bullet points
+dependencies:
+  python:
+    - pymupdf
+  system:
+    - poppler
+---
+
+When asked to summarize a PDF:
+
+1. Use the `Read` tool to read the PDF file
+2. Extract the key sections and main arguments
+3. Produce a bullet-point summary with:
+   - Main thesis / purpose
+   - Key findings (3-5 points)
+   - Conclusions and recommendations
+4. Keep the summary under 500 words unless asked for more detail
+```
+
+## Frontmatter Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Skill identifier (lowercase, hyphens ok) |
+| `description` | Yes | One-line description shown in `/skills list` |
+| `dependencies` | No | Dependencies to auto-install |
+
+## Dependency Types
+
+```yaml
+dependencies:
+  python:
+    - pymupdf>=1.23.0
+    - pandas
+  npm:
+    - "@playwright/mcp"
+  mcp:
+    - name: playwright
+      type: stdio
+      command: npx
+      args: ["@playwright/mcp@latest"]
+  system:
+    - poppler       # shown for manual install
+    - ffmpeg
+```
+
+| Type | Auto-installed? | How |
+|---|---|---|
+| `python` | Yes | `pip install` into active venv |
+| `npm` | Yes | `npm install --prefix .octo/` |
+| `mcp` | Yes | Added to `.mcp.json` |
+| `system` | No | Displayed for manual installation |
+
+## Installation Location
+
+Skills are installed to `.octo/skills/<name>/SKILL.md`.
+
+## Invoking Skills
+
+Once installed, invoke a skill as a slash command:
+
+```
+/<skill-name>
+```
+
+The skill's prompt is injected into the conversation, guiding the agent's behavior for that interaction.
+
+## Publishing Skills
+
+Skills can be shared via Git repositories. The marketplace commands (`/skills search`, `octo skills search`) discover published skills.
+
+<Tip>
+Keep skills focused on a single task. A skill that does one thing well is more reusable than one that tries to do everything.
+</Tip>

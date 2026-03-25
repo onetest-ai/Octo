@@ -1,0 +1,144 @@
+---
+title: Architecture Overview
+description: How Octo's supervisor graph, transports, and agents fit together
+icon: sitemap
+---
+
+Octo is built on [LangGraph](https://github.com/langchain-ai/langgraph) — a framework for building stateful, multi-agent applications.
+
+## System Diagram
+
+```
+                        ┌──────────────────────┐
+Console (Rich) ←──────→│                      │←───→ Project Workers (claude -p)
+                        │    Supervisor        │←───→ Standard Agents (AGENT.md)
+Telegram Bot   ←──────→│  (create_supervisor) │←───→ Deep Research Agents
+                        │                      │
+Heartbeat      ────────→│    asyncio.Lock      │←──→ Built-in Tools (direct)
+Cron Scheduler ────────→│                      │←──→ MCP Tools (deferred proxy)
+                        └──────────────────────┘
+```
+
+All transports share the same conversation thread and graph lock.
+
+## Key Components
+
+### Supervisor
+
+The central agent built with `create_supervisor` from `langgraph-supervisor`. It:
+- Receives all user messages
+- Routes to the appropriate worker agent
+- Manages task plans, memory, and state
+- Has access to supervisor-only tools (todos, memory, file sending, scheduling)
+
+### Workers
+
+Three types of worker agents:
+
+<AccordionGroup>
+  <Accordion title="Project Workers" icon="code">
+    Created for each registered project. They wrap `claude -p` (Claude Code CLI) for full codebase access. The supervisor delegates project-specific coding tasks to these workers.
+  </Accordion>
+
+  <Accordion title="Standard Agents" icon="robot">
+    Built with `create_agent` from LangGraph. Each gets:
+    - Built-in tools (Read, Grep, Glob, Edit, Bash) filtered by `tools:` in AGENT.md
+    - MCP tools via deferred proxy (`find_tools` + `call_mcp_tool`), or directly if the agent specifies a curated `tools:` list
+    - `ToolErrorMiddleware` for graceful error handling
+    - `SummarizationMiddleware` for context compression
+
+    See [Tool Architecture](/architecture/tool-architecture) for details on deferred vs direct tool binding.
+  </Accordion>
+
+  <Accordion title="Deep Research Agents" icon="microscope">
+    Built with `create_deep_agent` from the `deepagents` library. They get:
+    - Persistent filesystem workspace at `.octo/workspace/<date>/`
+    - TodoList middleware for planning
+    - Summarization middleware
+    - Sub-agent spawning capability
+  </Accordion>
+</AccordionGroup>
+
+### Transports
+
+| Transport | Description |
+|---|---|
+| **Rich Console** | Primary CLI interface with styled output, spinner, tool panels |
+| **Telegram Bot** | Bidirectional bot with voice, files, and rich formatting |
+| **Heartbeat** | Periodic timer that invokes the graph on a schedule |
+| **Cron Scheduler** | Job-based scheduler with at/every/cron expressions |
+
+All transports share an `asyncio.Lock` to prevent concurrent graph invocations.
+
+### State Persistence
+
+- **Conversation** — SQLite via `langgraph-checkpoint-sqlite` (`.octo/octo.db`)
+- **Sessions** — `.octo/sessions.json` (metadata for resume)
+- **Task plans** — `.octo/plans/plan_<datetime>.json`
+- **Memory** — `.octo/memory/` (daily) + `MEMORY.md` (long-term)
+- **Cron jobs** — `.octo/cron.json`
+
+## File Map
+
+Since v0.5.0, the package is split into two layers:
+
+- **`octo/core/`** — the embeddable engine. No env vars, no CLI dependencies. Can be used in any Python service via `OctoEngine`.
+- **`octo/`** root — CLI-specific code (Rich UI, Telegram, heartbeat). Root-level files like `graph.py` and `middleware.py` are backward-compat re-export shims that delegate to `core/`.
+
+```
+octo/
+├── core/                # Embeddable engine
+│   ├── graph.py         # Supervisor graph assembly + tools
+│   ├── middleware.py     # Tool errors, truncation, summarization
+│   ├── constants.py     # Pure data (profiles, ProjectConfig)
+│   ├── config.py        # OctoConfig dataclass
+│   ├── engine.py        # OctoEngine (invoke / stream / close)
+│   ├── _builder.py      # Graph builder from OctoConfig
+│   ├── tools/           # Built-in + memory + planning + MCP proxy
+│   ├── loaders/         # Agent, MCP, and skill loaders
+│   ├── storage/         # StorageBackend, FilesystemStorage, S3Storage
+│   └── checkpointing/   # SQLite + PostgreSQL checkpointer factory
+│
+├── cli.py               # Click CLI + async chat loop (entry point)
+├── config.py            # .env loading → re-exports from core.constants
+├── models.py            # Model factory (5 providers, config injection)
+├── graph.py             # Re-export shim → core.graph
+├── middleware.py         # Re-export shim → core.middleware
+├── tools/               # Re-export shim → core.tools
+├── loaders/             # Re-export shim → core.loaders
+├── context.py           # System prompt composition
+├── heartbeat.py         # Heartbeat + cron scheduler
+├── telegram.py          # Telegram bot transport
+├── sessions.py          # Session registry
+├── callbacks.py         # LangChain callback handler (UI)
+├── ui.py                # Rich console (banners, input, help)
+├── voice.py             # ElevenLabs TTS + Whisper STT
+├── abort.py             # ESC-to-abort terminal listener
+├── retry.py             # Auto-retry with exponential backoff
+├── wizard/              # Setup wizard + health check
+├── oauth/               # Browser-based OAuth for MCP
+└── virtual_persona/     # VP Teams monitoring (12 files)
+```
+
+## Request Flow
+
+<Steps>
+  <Step title="User sends message">
+    Via Rich console, Telegram, or proactive trigger (heartbeat/cron).
+  </Step>
+  <Step title="Graph lock acquired">
+    The `asyncio.Lock` ensures only one invocation at a time.
+  </Step>
+  <Step title="Supervisor receives message">
+    System prompt includes: persona, STATE.md, memory, agent descriptions.
+  </Step>
+  <Step title="Supervisor routes to worker">
+    Based on agent descriptions and conversation context. Or handles directly.
+  </Step>
+  <Step title="Worker executes">
+    Uses tools (MCP + built-in), generates response. Middleware handles errors and context.
+  </Step>
+  <Step title="Response returned">
+    Rendered via Rich console and/or sent to Telegram. State checkpointed to SQLite.
+  </Step>
+</Steps>

@@ -1,0 +1,282 @@
+---
+title: MS Teams Integration
+description: Read and send Microsoft Teams messages through Octo
+icon: comments
+---
+
+Octo includes a built-in MS Teams MCP server that lets agents read chats, send messages, and browse teams/channels — all using your personal Microsoft account. No admin approval or Azure AD app registration required.
+
+## How It Works
+
+The Teams server runs as a local STDIO process alongside Octo. It uses Microsoft Graph API with **user-consent-only** scopes and ships a pre-registered public client ID, so authentication is a one-time device code flow — open a URL, enter a code, done.
+
+<Info>
+The server uses the same pre-registered Azure AD application as [Softeria ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server). No tenant admin involvement needed.
+</Info>
+
+## Setup
+
+The Teams server is included with Octo. Just add the entry to `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "msteams": {
+      "type": "stdio",
+      "command": ".venv/bin/python",
+      "args": ["-m", "octo.mcp_servers.teams"]
+    }
+  }
+}
+```
+
+Then reload:
+
+```
+/mcp reload
+```
+
+## Authentication
+
+<Steps>
+  <Step title="Trigger login">
+    Ask Octo to check your Teams messages, or call the login tool directly:
+
+    ```
+    /call msteams login
+    ```
+  </Step>
+
+  <Step title="Complete device code flow">
+    The server prints a URL and code to the console:
+
+    ```
+    To sign in, use a web browser to open the page
+    https://microsoft.com/devicelogin and enter the code ABCD12345
+    ```
+
+    Open the URL, enter the code, and sign in with your Microsoft account.
+  </Step>
+
+  <Step title="Approve permissions">
+    Microsoft shows a consent screen for these permissions:
+
+    | Permission | Description |
+    |---|---|
+    | Read your chat messages | `Chat.Read` |
+    | Send chat messages | `ChatMessage.Send` |
+    | Read names and descriptions of teams | `Team.ReadBasic.All` |
+    | Read names and descriptions of channels | `Channel.ReadBasic.All` |
+    | Sign you in and read your profile | `User.Read` |
+
+    Click **Accept**. All permissions are user-consent — no admin approval needed.
+  </Step>
+
+  <Step title="Done">
+    The token is cached locally. Subsequent calls use silent refresh — no re-auth needed until the refresh token expires (typically 90 days).
+  </Step>
+</Steps>
+
+<Warning>
+The device code flow blocks the tool call until you complete authentication in your browser. If you don't complete it within 15 minutes, the flow times out.
+</Warning>
+
+## Available Tools
+
+The server exposes 10 tools:
+
+| Tool | Description |
+|---|---|
+| `login` | Authenticate via device code flow |
+| `logout` | Clear cached tokens |
+| `list-chats` | List recent chats with message previews and members |
+| `list-chat-messages` | Read messages from a specific chat |
+| `list-chat-members` | List members of a chat |
+| `find-chat` | Search for chats by person name or topic |
+| `send-chat-message` | Send a message to a chat |
+| `reply-to-chat-message` | Reply to a specific message |
+| `list-joined-teams` | List Teams you belong to |
+| `list-team-channels` | List channels in a Team |
+
+### Parameter Names
+
+All parameters use **camelCase** to match what LLMs naturally generate:
+
+```
+chatId, messageId, teamId, contentType, limit
+```
+
+## Contacts Cache
+
+The server maintains a local contacts cache at `~/.octo/teams_contacts.json`. This lets the `find-chat` tool resolve names instantly without calling the API.
+
+### How It Builds
+
+The cache auto-populates when you use `list-chats` — member names and chat metadata are indexed. After one `list-chats` call with 50 chats, the cache typically contains 1000+ users from your organization.
+
+### How `find-chat` Uses It
+
+1. You ask: _"check messages from Valentina"_
+2. Agent calls `find-chat` with `query: "Valentina"`
+3. Server searches the cache by name — instant match
+4. Agent gets the chat ID and calls `list-chat-messages`
+
+If the cache doesn't have a match, `find-chat` automatically fetches the 50 most recent chats, updates the cache, and retries.
+
+<Tip>
+The cache persists across server restarts. Run `list-chats` with a high limit once to seed the cache, then `find-chat` handles lookups from there.
+</Tip>
+
+## Token & Cache Storage
+
+All state is stored under `~/.octo/` by default:
+
+| File | Purpose |
+|---|---|
+| `~/.octo/teams_token_cache.json` | MSAL token cache (access + refresh tokens) |
+| `~/.octo/teams_contacts.json` | Contacts and chat index for fast lookups |
+
+File permissions on the token cache are set to `0600` (owner-only read/write).
+
+### Overriding Locations
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `TEAMS_TOKEN_CACHE` | `~/.octo/teams_token_cache.json` | Path to the MSAL token cache file |
+| `TEAMS_CACHE_DIR` | `~/.octo` | Directory for the contacts cache |
+| `TEAMS_CLIENT_ID` | Pre-registered public client | Override with your own Azure AD app |
+| `TEAMS_TENANT_ID` | `common` | Azure AD tenant ID |
+
+Set these in `.mcp.json` under `env` if needed:
+
+```json
+"msteams": {
+    "type": "stdio",
+    "command": ".venv/bin/python",
+    "args": ["-m", "octo.mcp_servers.teams"],
+    "env": {
+        "TEAMS_CLIENT_ID": "your-app-client-id",
+        "TEAMS_TENANT_ID": "your-tenant-id"
+    }
+}
+```
+
+## Permissions & Limitations
+
+### What Works (user-consent only)
+
+- Reading 1:1 and group chat messages
+- Sending messages to any chat you're a member of
+- Replying to specific messages
+- Listing teams and channels you belong to
+- Browsing chat members
+
+### What Doesn't Work (requires admin consent)
+
+| Feature | Required Scope | Why |
+|---|---|---|
+| Reading channel messages | `ChannelMessage.Read.All` | Admin consent required |
+| Posting to channels | `ChannelMessage.Send` | Admin consent required |
+| Reading all user chats (app-level) | `Chat.Read.All` | Application permission |
+
+<Note>
+If your organization's Azure AD admin has pre-approved these scopes for the Softeria app, channel features may work. But Octo does not request them by default.
+</Note>
+
+### Using Your Own Azure AD App
+
+If you prefer to use your own app registration (e.g., to request additional scopes or for compliance):
+
+<Steps>
+  <Step title="Register an app">
+    Go to [Azure Portal > App registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade) > **New registration**.
+
+    - Name: anything (e.g., "Octo Teams")
+    - Supported account types: **Accounts in any organizational directory** (multi-tenant)
+  </Step>
+
+  <Step title="Enable public client">
+    Under **Authentication > Advanced settings**, set **Allow public client flows** to **Yes**.
+  </Step>
+
+  <Step title="Add API permissions">
+    Under **API permissions > Add a permission > Microsoft Graph > Delegated**:
+
+    - `User.Read`
+    - `Chat.Read`
+    - `ChatMessage.Send`
+    - `Team.ReadBasic.All`
+    - `Channel.ReadBasic.All`
+
+    Add more scopes if needed (e.g., `ChannelMessage.Read.All` — requires admin consent).
+  </Step>
+
+  <Step title="Configure Octo">
+    Copy the **Application (client) ID** and optionally the **Directory (tenant) ID**:
+
+    ```json
+    "msteams": {
+        "type": "stdio",
+        "command": ".venv/bin/python",
+        "args": ["-m", "octo.mcp_servers.teams"],
+        "env": {
+            "TEAMS_CLIENT_ID": "your-client-id-here",
+            "TEAMS_TENANT_ID": "your-tenant-id"
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Token expired or invalid">
+    The refresh token may have expired. Run `logout` then `login` again:
+
+    ```
+    /call msteams logout
+    /call msteams login
+    ```
+
+    Or delete the cache file: `rm ~/.octo/teams_token_cache.json`
+  </Accordion>
+
+  <Accordion title="Permission denied for /me/chats">
+    Your organization may block the `Chat.Read` scope. Check with your Azure AD admin, or try using your own app registration with admin-approved scopes.
+  </Accordion>
+
+  <Accordion title="find-chat returns no results">
+    The contacts cache may not be populated yet. Run `list-chats` with a high limit first:
+
+    ```
+    /call msteams list-chats limit=50
+    ```
+
+    Then retry your search.
+  </Accordion>
+
+  <Accordion title="MCP server fails to start">
+    Verify the Python path is correct and `msal` is installed:
+
+    ```bash
+    .venv/bin/python -c "import msal; print('OK')"
+    .venv/bin/python -m octo.mcp_servers.teams  # should start, Ctrl+C to stop
+    ```
+  </Accordion>
+
+  <Accordion title="Device code not visible">
+    The device code is printed to stderr. If your MCP client doesn't show stderr, check the process output manually or look for the `login` tool's return value.
+  </Accordion>
+</AccordionGroup>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="MCP Servers" icon="plug" href="/octo/features/mcp-servers">
+    Manage all MCP servers and discover new ones
+  </Card>
+  <Card title="Proactive AI" icon="bell" href="/octo/features/proactive-ai">
+    Set up heartbeat and cron to get Teams summaries on schedule
+  </Card>
+</CardGroup>

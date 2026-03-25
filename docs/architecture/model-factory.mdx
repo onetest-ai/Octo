@@ -1,0 +1,168 @@
+---
+title: Model Factory
+description: How Octo creates LLM instances across 7 providers
+icon: industry
+---
+
+The model factory (`octo/models.py`) creates LLM instances for any supported provider. It auto-detects the provider from the model name and handles all provider-specific configuration.
+
+Since v0.5.0, the factory supports two modes: **CLI mode** (reads credentials from environment/module globals) and **Engine mode** (accepts a `config` dict — safe for embedding in services).
+
+## Provider Registry
+
+All providers are registered in a single `_REGISTRY` dict — the **single source of truth** for factory functions and default model IDs per tier:
+
+```python
+@dataclass
+class ProviderSpec:
+    factory: Callable   # fn(name, *, config=None) -> BaseChatModel
+    default: str = ""   # default tier model ID
+    high: str = ""      # high tier model ID
+    low: str = ""       # low tier model ID
+```
+
+The wizard, doctor, and engine all read model defaults from the registry — no hardcoded model lists elsewhere.
+
+## Supported Providers
+
+| Provider | LangChain Class | Model Pattern | Context Window |
+|---|---|---|---|
+| Anthropic | `ChatAnthropic` | `claude-*` | 200K |
+| AWS Bedrock | `ChatBedrockConverse` | `*.anthropic.*` | 200K |
+| OpenAI | `ChatOpenAI` | `gpt-*`, `o1-*`, `o3-*`, `o4-*` | 128K |
+| Azure OpenAI | `AzureChatOpenAI` | `gpt-*` + endpoint | 128K |
+| GitHub Models | `ChatAnthropic` or `ChatOpenAI` | `github/*` | varies |
+| Google Gemini | `ChatGoogleGenerativeAI` | `gemini-*` | 1M |
+| Local / Custom | `ChatOpenAI` | `local/*` | 32K (default) |
+
+## Provider Prefix Convention
+
+All providers support a universal `provider/model` prefix. This enables **mixed providers per tier** — different providers for high, default, and low tier models in the same session:
+
+```env
+# No LLM_PROVIDER needed — auto-detected per model name
+HIGH_TIER_MODEL=anthropic/claude-sonnet-4-5-20250929
+DEFAULT_MODEL=gemini/gemini-2.5-flash
+LOW_TIER_MODEL=local/llama3
+```
+
+The prefix is stripped before calling the provider factory, so `anthropic/claude-sonnet-4-5-20250929` becomes `claude-sonnet-4-5-20250929` when passed to `ChatAnthropic`.
+
+## Auto-Detection
+
+The `_detect_provider()` function resolves providers in order:
+
+1. **Explicit** — `LLM_PROVIDER` env var or `config["provider"]`
+2. **Universal prefix** — loop over registry keys: `anthropic/`, `gemini/`, `local/`, etc.
+3. **Legacy heuristics** (backward compat for unprefixed model names):
+   - Contains `.anthropic.` → Bedrock
+   - Starts with `gpt-`, `o1-`, `o3-`, `o4-` → OpenAI (or Azure if endpoint set)
+   - Starts with `claude-` → Anthropic
+   - Starts with `gemini-` → Gemini
+4. **Credential fallback** — checks which API keys are set
+
+## Signature
+
+```python
+make_model(model_name="", tier="default", *, config=None) -> BaseChatModel
+```
+
+| Parameter | Description |
+|---|---|
+| `model_name` | Explicit model ID. If empty, resolved from tier. |
+| `tier` | `"high"`, `"default"`, or `"low"` — resolved to a model name via env vars. |
+| `config` | Optional credentials dict for engine mode. Bypasses module-level globals. |
+
+## Tier System
+
+The `tier` parameter maps to configured model names:
+
+| Tier | Purpose | Typical Model |
+|---|---|---|
+| `high` | Complex reasoning, planning | Opus |
+| `default` | General chat, routing | Sonnet |
+| `low` | Summarization, cheap tasks | Haiku |
+
+Tiers are resolved to model names via `HIGH_TIER_MODEL`, `DEFAULT_MODEL`, `LOW_TIER_MODEL` in `.env`.
+
+## GitHub Models
+
+GitHub Models auto-routes based on model name:
+
+- `github/claude-*` or `github/anthropic/claude-*` → `ChatAnthropic` with GitHub's Anthropic base URL
+- Everything else → `ChatOpenAI` with GitHub's OpenAI-compatible base URL
+
+Authentication uses `GITHUB_TOKEN` (PAT with `models:read` scope).
+
+## Google Gemini
+
+Uses `ChatGoogleGenerativeAI` from `langchain-google-genai`. Supports Gemini 2.5 Flash, Pro, and Flash-Lite.
+
+```env
+GOOGLE_API_KEY=AI...
+DEFAULT_MODEL=gemini-2.5-flash
+```
+
+Auto-detected from `gemini-*` prefix or `gemini/` provider prefix. Also detects Vertex AI from environment variables automatically.
+
+## Local / Custom (vLLM, Ollama, llama.cpp)
+
+The `local` provider wraps `ChatOpenAI` with a custom `base_url`, targeting any OpenAI-compatible endpoint. Use this for vLLM, Ollama, llama.cpp, and other local inference servers.
+
+```env
+OPENAI_API_BASE=http://localhost:8000/v1
+DEFAULT_MODEL=local/llama3
+```
+
+<Note>
+The `local` provider is intentionally separate from the `openai` provider. This prevents `OPENAI_API_BASE` from accidentally redirecting real OpenAI API calls. Use `openai/gpt-4o` for OpenAI and `local/llama3` for your local server.
+</Note>
+
+## Design Decisions
+
+<AccordionGroup>
+  <Accordion title="Why ChatBedrockConverse instead of ChatBedrock?">
+    `ChatBedrock` fails with tool results ("Extra inputs not permitted"). `ChatBedrockConverse` uses AWS's native `converse` API which handles tool use correctly.
+  </Accordion>
+
+  <Accordion title="Why lazy imports?">
+    Heavy dependencies (boto3, langchain_anthropic, etc.) are imported inside factory functions. This keeps startup fast and avoids import errors when a provider isn't installed.
+  </Accordion>
+
+  <Accordion title="Why singleton Bedrock client?">
+    In CLI mode, the boto3 Bedrock client is cached as a singleton to avoid creating new connections on every model instantiation. In engine mode, a fresh client is created per config (no caching) to support multi-config embedding. Both are configured with `read_timeout=300` and `retries={"max_attempts": 0}` (retries handled by Octo's retry module).
+  </Accordion>
+
+  <Accordion title="Why patch bind_tools?">
+    `ChatBedrockConverse.bind_tools()` stores tools as Pydantic objects instead of dicts. LangGraph's `_should_bind_tools` crashes with `AttributeError`. The patch in `models.py` normalizes tool storage.
+  </Accordion>
+</AccordionGroup>
+
+## Engine Mode (Embedding)
+
+When embedding Octo in a service, pass a `config` dict to bypass environment variables:
+
+```python
+from octo.models import make_model
+
+model = make_model("claude-sonnet-4-5-20250929", config={
+    "provider": "anthropic",
+    "api_key": "sk-ant-...",
+})
+```
+
+The config dict accepts these keys (all optional, provider-dependent):
+
+| Key | Used By |
+|---|---|
+| `provider` | All — overrides auto-detection |
+| `api_key` | Anthropic, GitHub, Gemini, OpenAI, Azure |
+| `openai_api_key` | OpenAI, Local |
+| `openai_api_base` | OpenAI (optional), Local |
+| `azure_api_key`, `azure_endpoint`, `azure_api_version` | Azure |
+| `region`, `access_key_id`, `secret_access_key` | Bedrock |
+| `github_token`, `github_base_url`, `github_anthropic_base_url` | GitHub Models |
+| `google_api_key` | Gemini |
+| `default_model`, `high_tier_model`, `low_tier_model` | All — tier resolution |
+
+See [Embeddable Engine](/architecture/embedding) for the full embedding API (`OctoEngine` + `OctoConfig`).

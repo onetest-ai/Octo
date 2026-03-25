@@ -1,0 +1,150 @@
+---
+title: MCP Servers
+description: Connect and manage Model Context Protocol servers
+icon: plug
+---
+
+Octo connects to MCP servers defined in `.mcp.json`, making their tools available to all agents. Manage servers live without restarting.
+
+## Configuration
+
+MCP servers are defined in `.mcp.json` at your workspace root:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ghp_YOUR_TOKEN"
+      }
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"],
+      "stateful": true
+    }
+  }
+}
+```
+
+See [`.mcp.json.example`](https://github.com/onetest-ai/Octo/blob/main/.mcp.json.example) for a full template.
+
+## MCP Registry
+
+Discover and install servers from the [official MCP registry](https://registry.modelcontextprotocol.io) — no manual config needed:
+
+```
+/mcp find postgres        # search the registry
+/mcp install io.github.user/postgres-mcp   # interactive install
+```
+
+The install wizard automatically:
+- Fetches server metadata (packages, remotes, required config)
+- Prompts for required secrets (API keys are masked, placeholders shown as hints)
+- Lets you pick between npm/pypi packages or remote endpoints
+- Generates the `.mcp.json` entry with correct transport, command, args, and env
+- Hot-reloads all servers immediately
+
+<Frame>
+```
+> /mcp install io.github.getsentry/sentry-mcp
+
+  Install MCP Server
+
+  io.github.getsentry/sentry-mcp
+  MCP server for Sentry — error monitoring, issue tracking
+  Version: 0.25.0
+
+  Package: @sentry/mcp-server (npm)
+  Local server name [sentry-mcp]:
+
+  Required environment variables:
+    Your Sentry user authentication token
+  SENTRY_ACCESS_TOKEN: ****
+
+  Installed 'sentry-mcp' to .mcp.json
+  Reloading MCP servers...
+  Reloaded: 67 tools from 6 server(s)
+```
+</Frame>
+
+## Live Management
+
+All commands work without restart:
+
+```
+/mcp              # show status — servers, tools, health
+/mcp reload       # reload all servers
+/mcp find <query> # search the MCP registry
+/mcp install <name> # install from registry with guided wizard
+/mcp add          # interactive wizard to add a server manually
+/mcp disable X    # disable a server (keeps config)
+/mcp enable X     # re-enable a disabled server
+/mcp remove X     # remove a server entirely
+```
+
+## Calling Tools Directly
+
+Bypass the agent and call any MCP tool directly:
+
+```
+/call github get_file_contents owner=foo repo=bar path=README.md
+/call playwright browser_navigate url=https://example.com
+```
+
+Optionally specify the server name as the first argument if tool names collide.
+
+## OAuth Authentication
+
+Some MCP servers require browser-based OAuth:
+
+```bash
+octo auth login <server>    # opens browser for OAuth flow
+octo auth status            # check token status for all servers
+octo auth logout <server>   # revoke tokens
+```
+
+Tokens are stored in `.octo/oauth/` and reused across sessions.
+
+## Built-in Servers
+
+Octo ships with a built-in MCP server for Microsoft Teams:
+
+| Server | Description | Guide |
+|---|---|---|
+| `msteams` | Read/send Teams messages via Microsoft Graph API | [Teams Integration](/guides/teams-integration) |
+
+Built-in servers run as local Python processes — no npm or external dependencies needed. Add them to `.mcp.json` and they're ready to use.
+
+## Server Types
+
+| Type | Description | Example |
+|---|---|---|
+| `http` | HTTP/SSE endpoint | GitHub Copilot MCP, Tavily, Context7 |
+| `stdio` | Local process via stdin/stdout | Playwright, Teams, filesystem tools |
+
+## Deferred Tool Loading
+
+As you add more MCP servers, the number of tools grows. Octo uses **deferred tool loading** to keep the agent's context clean:
+
+- MCP tools are **not** directly bound to the supervisor or worker agents
+- Instead, agents get two meta-tools: `find_tools(query)` and `call_mcp_tool(name, args)`
+- The supervisor prompt lists available servers with tool counts so the agent knows what to search for
+
+This means 60+ tools become just 2 tool schemas in context, dramatically reducing token cost and improving tool selection accuracy.
+
+<Note>
+Built-in tools (Read, Grep, Glob, Edit, Bash) and supervisor-only tools (todos, memory, skills) are always directly available — no search needed.
+</Note>
+
+### How It Works
+
+1. Agent receives a request that needs an MCP tool
+2. Agent calls `find_tools("github issues")` — gets matching tools with full parameter schemas
+3. Agent calls `call_mcp_tool("mcp__github__list_issues", {"repo": "owner/repo"})` — executes the tool
+4. Result flows back normally (with truncation if oversized)
+
+Workers and deep research agents also have access to `find_tools` and `call_mcp_tool`, so they can discover and use MCP tools on demand.

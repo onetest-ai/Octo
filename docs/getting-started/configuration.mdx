@@ -1,0 +1,279 @@
+---
+title: Configuration
+description: LLM providers, model tiers, and environment variables
+icon: gear
+---
+
+All configuration lives in `.env` at your workspace root. The setup wizard (`octo init`) generates this file, or you can create it manually from [`.env.example`](https://github.com/onetest-ai/Octo/blob/main/.env.example).
+
+## Config File Locations
+
+Octo resolves its workspace by walking up from the current directory looking for `.octo/` or `.env`. If none is found, it falls back to platform defaults.
+
+### Resolution Order
+
+1. Walk up from `cwd` — first directory containing `.octo/` or `.env`
+2. Platform default (if no project workspace found):
+
+| Platform | Default Location | State Dir |
+|---|---|---|
+| macOS / Linux | `~` | `~/.octo/` |
+| Windows | `%LOCALAPPDATA%/octo` | `%LOCALAPPDATA%/octo/.octo/` |
+
+3. Override with `OCTO_HOME` env var — points to the workspace root
+
+### Config File Precedence
+
+Octo checks two locations for `.env` and `.mcp.json`, loading the first it finds:
+
+| File | Primary (checked first) | Fallback |
+|---|---|---|
+| `.env` | `.octo/.env` | `<workspace>/.env` |
+| `.mcp.json` | `.octo/.mcp.json` | `<workspace>/.mcp.json` |
+
+<Tip>
+For global installs (via `uvx` or `uv tool`), keep all config inside `~/.octo/` — create `~/.octo/.env` and `~/.octo/.mcp.json`. This way Octo works from any directory without a project-local workspace.
+</Tip>
+
+## LLM Providers
+
+Octo supports 7 providers. You only need to configure **one** — or mix multiple providers across tiers.
+
+<Tabs>
+  <Tab title="Anthropic">
+    The simplest option — direct API access to Claude models.
+
+    ```env
+    ANTHROPIC_API_KEY=sk-ant-...
+    DEFAULT_MODEL=claude-sonnet-4-5-20250929
+    ```
+  </Tab>
+
+  <Tab title="AWS Bedrock">
+    Uses Claude models via AWS. Requires AWS credentials with Bedrock access.
+
+    ```env
+    AWS_REGION=us-east-1
+    AWS_ACCESS_KEY_ID=...
+    AWS_SECRET_ACCESS_KEY=...
+    DEFAULT_MODEL=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    ```
+
+    <Note>
+    Bedrock model IDs include a region prefix (`us.`, `eu.`) and version suffix (`:0`).
+    </Note>
+  </Tab>
+
+  <Tab title="OpenAI">
+    ```env
+    OPENAI_API_KEY=sk-...
+    DEFAULT_MODEL=gpt-4o
+    ```
+  </Tab>
+
+  <Tab title="Azure OpenAI">
+    ```env
+    AZURE_OPENAI_API_KEY=...
+    AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+    AZURE_OPENAI_API_VERSION=2024-12-01-preview
+    DEFAULT_MODEL=gpt-4o
+    ```
+  </Tab>
+
+  <Tab title="GitHub Models">
+    Free tier available with a GitHub PAT.
+
+    ```env
+    GITHUB_TOKEN=ghp_...
+    DEFAULT_MODEL=github/openai/gpt-4.1
+    ```
+
+    GitHub Models auto-routes to the right LangChain class:
+    - `github/claude-*` → ChatAnthropic
+    - Everything else → ChatOpenAI
+  </Tab>
+
+  <Tab title="Google Gemini">
+    Gemini 2.5 Flash, Pro, and Flash-Lite via Google AI Studio.
+
+    ```env
+    GOOGLE_API_KEY=AI...
+    DEFAULT_MODEL=gemini-2.5-flash
+    ```
+
+    Also accepts `GEMINI_API_KEY` as an alias. Auto-detects Vertex AI from environment variables.
+  </Tab>
+
+  <Tab title="Local / Custom">
+    Any OpenAI-compatible endpoint — vLLM, Ollama, llama.cpp, etc.
+
+    ```env
+    OPENAI_API_BASE=http://localhost:8000/v1
+    DEFAULT_MODEL=local/llama3
+    ```
+
+    The `local/` prefix is required to distinguish from the `openai` provider. API key is optional (defaults to `not-needed`).
+  </Tab>
+</Tabs>
+
+## Auto-Detection
+
+The model factory auto-detects the provider from the model name. Use the **universal `provider/` prefix** for explicit routing, or rely on legacy heuristics for unprefixed names:
+
+| Model name pattern | Provider |
+|---|---|
+| `anthropic/claude-*` | Anthropic (prefix) |
+| `bedrock/eu.anthropic.*` | AWS Bedrock (prefix) |
+| `openai/gpt-*` | OpenAI (prefix) |
+| `gemini/gemini-*` | Google Gemini (prefix) |
+| `local/llama3` | Local / Custom (prefix) |
+| `github/openai/gpt-4.1` | GitHub Models (prefix) |
+| `claude-*` | Anthropic (heuristic) |
+| `gemini-*` | Google Gemini (heuristic) |
+| `eu.anthropic.*`, `us.anthropic.*` | AWS Bedrock (heuristic) |
+| `gpt-*`, `o1-*`, `o3-*`, `o4-*` | OpenAI (heuristic) |
+| `gpt-*` + `AZURE_OPENAI_ENDPOINT` set | Azure OpenAI (heuristic) |
+
+Override with `LLM_PROVIDER` if needed:
+
+```env
+LLM_PROVIDER=bedrock  # anthropic | bedrock | openai | azure | github | gemini | local
+```
+
+## Mixed Providers
+
+You can use different providers for each tier — just use `provider/` prefixes in your model names and leave `LLM_PROVIDER` unset:
+
+```env
+# Each tier auto-detects its provider from the prefix
+HIGH_TIER_MODEL=anthropic/claude-sonnet-4-5-20250929
+DEFAULT_MODEL=gemini/gemini-2.5-flash
+LOW_TIER_MODEL=local/llama3
+
+# Provide credentials for each provider used
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_API_KEY=AI...
+OPENAI_API_BASE=http://localhost:8000/v1
+```
+
+<Tip>
+Mixed providers are great for cost optimization: use a powerful cloud model for complex reasoning, a fast Gemini model for general routing, and a free local model for summarization.
+</Tip>
+
+## Model Tiers
+
+Octo uses three tiers to balance cost vs quality. Different agents use different tiers:
+
+| Tier | Used For | Example |
+|---|---|---|
+| **HIGH** | Complex reasoning, architecture, multi-step planning | `claude-opus-4-5-20250929` |
+| **DEFAULT** | Supervisor routing, general chat, tool use | `claude-sonnet-4-5-20250929` |
+| **LOW** | Summarization, simple workers, cost-sensitive tasks | `claude-haiku-4-5-20251001` |
+
+```env
+DEFAULT_MODEL=claude-sonnet-4-5-20250929
+HIGH_TIER_MODEL=claude-opus-4-5-20250929
+LOW_TIER_MODEL=claude-haiku-4-5-20251001
+```
+
+## Model Profiles
+
+Profiles are presets that map tiers to agent roles:
+
+| Profile | Supervisor | Workers | High-tier agents |
+|---|---|---|---|
+| `quality` | high | default | high |
+| `balanced` | default | low | high |
+| `budget` | low | low | default |
+
+```env
+MODEL_PROFILE=balanced
+```
+
+Switch at runtime with `/profile <name>`.
+
+## Agent Directories
+
+Load agents from external projects by pointing to their AGENT.md directories:
+
+```env
+AGENT_DIRS=/path/to/project-a/.claude/agents:/path/to/project-b/.claude/agents
+```
+
+Colon-separated. Each directory is scanned for `*/AGENT.md` files.
+
+## Middleware Tuning
+
+```env
+# Max chars for a single tool result before truncation
+TOOL_RESULT_LIMIT=20000
+
+# Context window summarization triggers (whichever fires first)
+SUMMARIZATION_TRIGGER_FRACTION=0.7
+SUMMARIZATION_TRIGGER_TOKENS=40000
+
+# Tokens of recent history to keep after summarization
+SUMMARIZATION_KEEP_TOKENS=8000
+
+# Supervisor per-message char limit
+SUPERVISOR_MSG_CHAR_LIMIT=30000
+
+# Timeout for claude -p subprocess calls (seconds)
+CLAUDE_CODE_TIMEOUT=2400
+```
+
+## Observability (Langfuse)
+
+Octo supports [Langfuse](https://langfuse.com) tracing for monitoring AI decisions, token usage, and cost. Toggle with a single env var:
+
+```env
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com  # optional, for self-hosted
+```
+
+See [Langfuse Integration](/guides/langfuse-integration) for full setup guide.
+
+## Voice
+
+Octo supports pluggable STT and TTS engines — cloud (ElevenLabs) or local (any command-line tool).
+
+```env
+# Engine selection (default: elevenlabs for both)
+VOICE_STT_ENGINE=whisper      # elevenlabs | whisper
+VOICE_TTS_ENGINE=kokoro       # elevenlabs | kokoro
+
+# ElevenLabs (cloud)
+ELEVENLABS_API_KEY=your_key
+ELEVENLABS_VOICE_ID=...       # optional
+
+# Local engines — full command line (Octo appends file path as last arg)
+WHISPER_COMMAND=/path/to/venv/bin/python /path/to/transcribe.py
+KOKORO_COMMAND=/path/to/venv/bin/python /path/to/synthesize.py
+```
+
+See [Voice](/features/voice) for the subprocess protocol, example scripts, and voiceover text preparation.
+
+## MCP Servers
+
+MCP server configuration lives in `.mcp.json` (checked in `.octo/.mcp.json` first, then workspace root). See [`.mcp.json.example`](https://github.com/onetest-ai/Octo/blob/main/.mcp.json.example) for a template, and [MCP Servers](/features/mcp-servers) for management commands.
+
+Octo includes a built-in [MS Teams server](/guides/teams-integration) — add it to `.mcp.json` for chat integration.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Telegram Setup" icon="paper-plane" href="/octo/getting-started/telegram-setup">
+    Add Telegram transport
+  </Card>
+  <Card title="Teams Integration" icon="comments" href="/octo/guides/teams-integration">
+    Read and send MS Teams messages
+  </Card>
+  <Card title="Model Profiles" icon="sliders" href="/octo/guides/model-profiles">
+    Fine-tune cost vs quality
+  </Card>
+  <Card title="MCP Servers" icon="plug" href="/octo/features/mcp-servers">
+    Connect external tools via MCP
+  </Card>
+</CardGroup>

@@ -1,0 +1,29 @@
+---
+title: Session Management
+description: Resume conversations and manage threads
+icon: clock-rotate-left
+---
+
+Octo persists conversations in SQLite and tracks sessions for easy resume.
+
+## Resuming Sessions
+
+```bash
+octo --resume              # resume the last session
+octo --thread <thread-id>  # resume a specific thread
+```
+
+## Session Commands
+
+| Command | Description |
+|---|---|
+| `/sessions` | List recent sessions (current marked with `*`) |
+| `/sessions <id>` | Switch to a specific session |
+| `/clear` | Start a fresh conversation (new thread) |
+
+## How It Works
+
+- Sessions are saved to `.octo/sessions.json` with metadata: thread ID, timestamps, message preview, model used
+- Conversation state is checkpointed in `.octo/octo.db` (SQLite) via LangGraph's built-in checkpointer
+- Sessions auto-save on: startup, `/clear`, `/sessions` switch, and each user message
+- The supervisor and all workers share the same thread — full context is preserved across agents

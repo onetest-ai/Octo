@@ -1,0 +1,280 @@
+---
+title: Virtual Persona
+description: AI assistant that monitors your Teams DMs and responds in your voice
+icon: user-secret
+---
+
+Virtual Persona (VP) is an autonomous AI assistant that reads your Teams messages, decides whether to respond, and replies in your authentic communication style — so colleagues get timely answers even when you're unavailable.
+
+## How It Works
+
+<Steps>
+  <Step title="Monitor">
+    VP polls your Teams DMs on a timer (default every 2 minutes). It reads new messages, aggregates multiple messages per chat into one query, and classifies each: does this need a response? Is it something the AI can handle?
+  </Step>
+
+  <Step title="Decide">
+    Each message gets a confidence score. High confidence → auto-respond. Medium → respond with disclaimer. Low → silently escalate to you. Messages that don't need a response are skipped entirely.
+  </Step>
+
+  <Step title="Respond (or not)">
+    For auto-responses, VP delegates to Octo's full agent stack (subagents, tools, skills) for the actual answer, then rewrites it in your personal communication style. For escalations, VP stays completely silent — the sender never knows.
+  </Step>
+</Steps>
+
+## Decision Types
+
+VP classifies every incoming message into one of five decisions:
+
+| Decision | Confidence | What Happens | Sender Sees |
+|---|---|---|---|
+| **skip** | — | No response needed (acknowledgments, social chatter) | Nothing |
+| **respond** | ≥80% | Auto-respond in your voice | Your response + 🤖 |
+| **disclaim** | 60-79% | Respond with a "verify with real me" caveat | Response + disclaimer + 🤖 |
+| **escalate** | below 60% | Thread locked, private notification to you | Nothing |
+| **monitor** | — | Suggested answer sent privately to you | Nothing |
+
+<Info>
+**Monitor is the default.** Until you explicitly `/vp allow` someone, VP only observes — it reads messages and sends you private suggestions but never responds to the sender.
+</Info>
+
+## Message Aggregation
+
+People often send 3-7 consecutive messages. VP collects all unprocessed messages per chat, merges them into one query, and runs the pipeline once per chat — not once per message. This means:
+
+- No duplicate responses to a burst of messages
+- Better context for confidence scoring (sees the full request)
+- If you already replied in a thread, VP skips messages before your last reply
+
+## Two-Stage Pipeline
+
+VP doesn't generate knowledge itself. It uses a multi-stage architecture:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Stage 1: VP Graph (decision engine)                     │
+│   access_check → classify → gather_context → route      │
+└───────────────────────┬─────────────────────────────────┘
+                        │ respond / disclaim / escalate / monitor
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 2: Octo Supervisor (knowledge engine)             │
+│   context-gatherer → subagents + MCP tools → raw answer │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│ Stage 3: VP Graph (persona formatting)                  │
+│   raw answer → rewrite in your style → send             │
+└─────────────────────────────────────────────────────────┘
+```
+
+This means VP responses benefit from every agent, tool, and skill Octo has — without reimplementing anything.
+
+## Cross-Conversation Context
+
+Before generating an answer, VP gathers context from multiple sources:
+
+**Layer 1 — Local knowledge (instant, no API calls):**
+- Searches the indexed conversation knowledge base for related threads by topic keywords
+- Finds all recent threads involving the same person
+- Feeds topic summaries and prior discussion context into the answer generation
+
+**Layer 2 — Deep search (via context-gatherer agent):**
+- For respond/disclaim decisions, Octo's `context-gatherer` agent searches:
+  - Email threads with the same person on similar topics (via Outlook MCP)
+  - Other Teams conversations involving the same person (via Teams MCP)
+  - External context if relevant (via web search)
+- This ensures VP answers reflect the full history you'd have in mind when replying
+
+## Invisible Escalation
+
+When VP can't handle a message confidently, escalation is **completely invisible** to the sender:
+
+- No "routing to real person" message
+- No typing indicator or acknowledgment
+- The thread is silently locked — VP won't touch it again until you release it
+- You get a private notification (via Telegram or console) with the full context and a suggested answer
+- **Reply to the Telegram notification** to respond directly — Octo routes your reply to the Teams chat and auto-releases the delegation lock
+- Reply "ignore" to mute the chat entirely
+
+<Warning>
+VP **never** reveals its existence to the sender during escalation. From the sender's perspective, they're just waiting for you to reply.
+</Warning>
+
+## Persona Generation
+
+VP needs to know how you communicate to sound like you. The `/vp persona generate` pipeline analyzes your actual Teams conversations:
+
+<Steps>
+  <Step title="Fetch Conversations">
+    Pulls 30-50 recent Teams chats with messages and participant info via MCP.
+  </Step>
+
+  <Step title="Per-Conversation Analysis">
+    Each conversation is analyzed separately for behavioral patterns: tone, language, humor, response style, social dynamics. This captures how you behave differently in different contexts.
+  </Step>
+
+  <Step title="Web Research">
+    Searches for your public communication presence — blog posts, conference talks, GitHub activity, social media. Uses Octo's full agent stack with web search tools.
+  </Step>
+
+  <Step title="Synthesis">
+    Merges all per-conversation analyses and web research into a unified communication profile: consistent patterns, situational variations, personality traits, anti-patterns.
+  </Step>
+
+  <Step title="Prompt Generation">
+    Generates a system prompt that captures your authentic voice, with behavioral rules, escalation guidelines, and example Q&A pairs.
+  </Step>
+</Steps>
+
+<Tip>
+More conversations = better persona. Aim for 20+ conversations with a good mix of 1:1 and group chats for the most accurate results.
+</Tip>
+
+## Access Control
+
+VP uses a YAML-backed access control system with two lists:
+
+| List | Behavior |
+|---|---|
+| **allow_ai** | VP responds automatically (subject to confidence scoring) |
+| **always_user** | VP observes and sends you suggestions, but never responds |
+
+Users not on either list are treated as `always_user` by default (monitor mode).
+
+### Per-User Confidence Modifiers
+
+Each allowed user can have a confidence modifier that adjusts scoring:
+
+```bash
+/vp allow alice@company.com +10    # More confident when answering Alice
+/vp allow bob@company.com -15      # More conservative with Bob
+```
+
+### 1-on-1 Chat Boost
+
+VP automatically gives a +15% confidence boost to 1-on-1 (DM) conversations. People expect replies when they message you directly, so the threshold is lower. Group chats use standard scoring.
+
+### Priority Users (Never-Ignore)
+
+Some contacts should never be ignored, even if their chat is on the ignore list. Add them to the priority list:
+
+```bash
+/vp priority add boss@company.com       # Always process their messages
+/vp priority remove boss@company.com    # Remove from priority list
+/vp priority                            # List all priority users
+```
+
+Priority users bypass the chat ignore list — their messages are always processed regardless of which chat they're in.
+
+### Ignoring Chats
+
+Mute noisy chats (bot channels, automated notifications) to reduce VP noise:
+
+```bash
+/vp ignore <chat_id> [label]     # Mute a chat
+/vp unignore <chat_id|all>       # Unmute
+/vp ignored                       # List ignored chats
+```
+
+## Delegation Locks
+
+When VP escalates a thread, it automatically locks that conversation:
+
+- VP won't respond to any messages in a locked thread
+- You handle it manually
+- Release when done: `/vp release <chat_id>` or `/vp release all`
+- View locked threads: `/vp delegated`
+
+## People Profiles
+
+VP maintains a contact map with interaction history:
+
+- **Auto-enrichment**: New contacts are enriched from Teams member info (name, title, department)
+- **Tone presets**: `casual_technical` (default for engineers), `casual`, `semi_formal`
+- **Topic tracking**: Tracks what each person usually discusses with you
+- **Interaction count**: How often VP has processed messages from them
+
+Set a tone override: `/vp profile alice@company.com tone semi_formal`
+
+## Conversation Knowledge
+
+VP maintains a topic cache for each thread it processes:
+
+- **Incremental sync**: Thread summaries updated on each poll cycle
+- **Topic classification**: LLM-based topic labeling for grounding
+- **Context feeding**: Thread context is passed to the confidence scorer and Octo supervisor
+
+This prevents VP from confusing topics across threads or giving responses without context.
+
+## Configuration
+
+```env
+VP_ENABLED=true                       # Enable VP subsystem (default: true)
+VP_SELF_EMAILS=you@company.com        # Your email(s), comma-separated
+VP_POLL_INTERVAL=2m                   # Polling frequency (2m, 30s, 1h, or bare seconds like 120)
+VP_ACTIVE_HOURS_START=08:00           # Local time
+VP_ACTIVE_HOURS_END=22:00             # Local time
+```
+
+<Warning>
+`VP_SELF_EMAILS` is required for VP to work correctly. Without it, VP can't distinguish your own messages from incoming ones.
+</Warning>
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/vp status` | Show VP state, allow/block counts, messages today |
+| `/vp enable` | Enable VP and start poller |
+| `/vp disable` | Kill switch — stop all VP activity |
+| `/vp allow <email> [+mod]` | Add user to auto-respond list |
+| `/vp block <email>` | Add user to monitor-only list |
+| `/vp remove <email>` | Remove from all lists |
+| `/vp list` | Show both lists with modifiers |
+| `/vp test <email> [query]` | Dry-run access check + confidence scoring |
+| `/vp stats [days]` | Aggregated stats (default 7 days) |
+| `/vp audit [N]` | Last N audit entries |
+| `/vp confidence <email> <mod>` | Update per-user confidence modifier |
+| `/vp sync` | Force full conversation knowledge sync |
+| `/vp profile <email>` | Show person's profile |
+| `/vp profile <email> tone <preset>` | Set tone override |
+| `/vp threads [N]` | Show recent classified thread topics |
+| `/vp delegated` | List locked (delegated) threads |
+| `/vp release <chat_id\|all>` | Release locked thread(s) |
+| `/vp ignore <chat_id> [label]` | Mute a chat (skip during polling) |
+| `/vp unignore <chat_id\|all>` | Unmute a chat |
+| `/vp ignored` | List ignored chats |
+| `/vp priority [add\|remove] <email>` | Manage never-ignore user list |
+| `/vp persona generate [name]` | Run full persona generation pipeline |
+| `/vp persona show` | Preview current persona prompt |
+| `/vp persona analysis` | Show communication analysis summary |
+| `/vp persona path` | Show file paths |
+
+## Data Files
+
+All VP data lives in `.octo/virtual-persona/`:
+
+| File | Purpose |
+|---|---|
+| `access-control.yaml` | Allow/block lists, enabled flag |
+| `system-prompt.md` | Persona prompt (generated or hand-edited) |
+| `profiles.json` | People profile map |
+| `knowledge/threads.json` | Thread topic index |
+| `audit.jsonl` | Append-only decision log |
+| `stats.json` | Counter aggregates |
+| `message-cache.json` | Processed message dedup |
+| `delegated.json` | Locked thread map |
+| `communication-analysis.json` | Synthesized profile from persona gen |
+| `per-conversation-analyses.json` | Raw per-chat analyses |
+| `web-research.md` | Public presence research results |
+
+<CardGroup cols={2}>
+  <Card title="Setup Guide" icon="rocket" href="/octo/guides/virtual-persona-setup">
+    Step-by-step VP setup and first test
+  </Card>
+  <Card title="Teams Integration" icon="people-group" href="/octo/guides/teams-integration">
+    Setting up the Teams MCP connection
+  </Card>
+</CardGroup>

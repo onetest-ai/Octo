@@ -1,0 +1,135 @@
+---
+title: Slash Commands
+description: Complete reference for all Octo slash commands
+icon: terminal
+---
+
+## General
+
+| Command | Description |
+|---|---|
+| `/help` | Show available commands |
+| `/clear` | Reset conversation (new thread) |
+| `/compact` | Summarize older messages to free context |
+| `/context` | Show context window usage bar |
+| `exit` | End session |
+| ESC | Abort running agent |
+
+## Agents & Tools
+
+| Command | Description |
+|---|---|
+| `/agents` | List all loaded agents |
+| `/tools` | List MCP tools grouped by server |
+| `/call [server] <tool>` | Call any MCP tool directly |
+| `/<agent> <prompt>` | Send prompt directly to a specific agent |
+
+## Skills
+
+| Command | Description |
+|---|---|
+| `/skills` | List installed skills |
+| `/skills search <query>` | Search the marketplace |
+| `/skills install <name>` | Install a skill (auto-resolves dependencies) |
+| `/skills remove <name>` | Uninstall a skill |
+| `/skills find <query>` | Search skills.sh ecosystem |
+| `/skills import <owner/repo>` | Import skills from a GitHub repo via skills.sh |
+| `/<skill>` | Invoke an installed skill |
+
+## MCP Servers
+
+| Command | Description |
+|---|---|
+| `/mcp` | Show server status |
+| `/mcp find <query>` | Search the official MCP registry |
+| `/mcp install <name>` | Install from registry with guided wizard |
+| `/mcp reload` | Reload all servers |
+| `/mcp add` | Interactive wizard to add a server manually |
+| `/mcp disable <name>` | Disable a server |
+| `/mcp enable <name>` | Re-enable a server |
+| `/mcp remove <name>` | Remove a server |
+
+## Sessions & State
+
+| Command | Description |
+|---|---|
+| `/sessions` | List recent sessions |
+| `/sessions <id>` | Switch to a session |
+| `/plan` | Show current task plan with progress |
+| `/profile [name]` | Show or switch model profile |
+| `/model <name>` | Switch active model |
+
+## Proactive AI
+
+| Command | Description |
+|---|---|
+| `/heartbeat` | Show heartbeat status |
+| `/heartbeat test` | Force a heartbeat tick |
+| `/cron` | List scheduled jobs |
+| `/cron add <spec> <task>` | Schedule a new job |
+| `/cron remove <id>` | Delete a job |
+| `/cron pause <id>` | Pause a job |
+| `/cron resume <id>` | Resume a paused job |
+
+## Virtual Persona
+
+| Command | Description |
+|---|---|
+| `/vp status` | Show VP state, allow/block counts, today's stats |
+| `/vp enable` | Enable VP and start poller |
+| `/vp disable` | Kill switch — stop all VP activity |
+| `/vp allow <email> [+mod]` | Add user to auto-respond list |
+| `/vp block <email>` | Add user to monitor-only list |
+| `/vp remove <email>` | Remove from all lists |
+| `/vp list` | Show both lists with modifiers |
+| `/vp test <email> [query]` | Dry-run access check + confidence scoring |
+| `/vp stats [days]` | Aggregated stats (default 7 days) |
+| `/vp audit [N]` | Last N audit entries |
+| `/vp confidence <email> <mod>` | Update per-user confidence modifier |
+| `/vp sync` | Force full conversation knowledge sync |
+| `/vp profile <email>` | Show person's profile |
+| `/vp profile <email> tone <preset>` | Set tone override |
+| `/vp threads [N]` | Show recent classified thread topics |
+| `/vp delegated` | List locked threads |
+| `/vp release <chat_id\|all>` | Release locked thread(s) |
+| `/vp ignore <chat_id> [label]` | Mute a chat (skip during polling) |
+| `/vp unignore <chat_id\|all>` | Unmute a chat |
+| `/vp ignored` | List ignored chats |
+| `/vp priority [add\|remove] <email>` | Manage never-ignore user list |
+| `/vp persona generate [name]` | Run full persona generation pipeline |
+| `/vp persona show` | Preview current persona prompt |
+| `/vp persona analysis` | Show communication analysis summary |
+
+## Background Tasks
+
+| Command | Description |
+|---|---|
+| `/bg <command>` | Dispatch a background process task |
+| `/tasks` | List all tasks with status |
+| `/task <id>` | Show task details and output |
+| `/task <id> cancel` | Cancel a running task |
+| `/task <id> resume <answer>` | Resume a paused task with your answer |
+
+## System
+
+| Command | Description |
+|---|---|
+| `/reload` | Hot-reload graph (re-reads `.env`, MCP servers, agents, skills) |
+| `/restart` | Cold-restart process via `os.execv` (same thread for continuity) |
+
+<Tip>
+`/reload` is a superset of `/mcp reload` — it also re-reads `.env` and reloads the config module, so new API keys or model changes take effect without restarting.
+</Tip>
+
+## Other
+
+| Command | Description |
+|---|---|
+| `/projects` | Show project registry |
+| `/create-agent` | AI-assisted agent creation wizard |
+| `/create-skill` | AI-assisted skill creation wizard |
+| `/voice on\|off` | Toggle text-to-speech |
+
+## Telegram
+
+All commands above are CLI-only. The Telegram bot has its own command set for remote management — see [Telegram Setup](/getting-started/telegram-setup) for the full list.

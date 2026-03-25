@@ -1,0 +1,133 @@
+---
+title: Creating Agents
+description: Build custom specialist agents with AGENT.md files
+icon: wrench
+---
+
+Agents are defined by `AGENT.md` files — a Markdown document with YAML frontmatter that tells Octo what the agent does and what tools it needs.
+
+## Interactive Wizard
+
+The fastest way to create an agent:
+
+```
+/create-agent
+```
+
+The wizard guides you through:
+
+<Steps>
+  <Step title="Name and description">
+    Validated format with collision detection against existing agents.
+  </Step>
+  <Step title="Agent type">
+    **Standard** (tools + prompt) or **Deep research** (persistent workspace with planning middleware).
+  </Step>
+  <Step title="Tool selection">
+    Numbered table of all available tools (built-in + MCP). Shortcuts: `builtin`, `all`, `none`.
+  </Step>
+  <Step title="Purpose description">
+    Free-text description of what the agent should do.
+  </Step>
+  <Step title="AI generation">
+    An LLM generates a full system prompt based on your description, selected tools, and examples from existing agents. The AGENT.md is previewed before saving.
+  </Step>
+</Steps>
+
+Agents are immediately available after the graph rebuilds.
+
+## Manual Creation
+
+Create `.octo/agents/<name>/AGENT.md`:
+
+```markdown
+---
+name: my-analyst
+description: Analyzes data files and produces reports
+type: ""
+tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash
+---
+
+You are a data analyst. When given a dataset or file path:
+
+1. Read and understand the data structure
+2. Identify patterns, anomalies, and key metrics
+3. Produce a clear summary with findings
+
+Always show your work — include the commands you ran and their output.
+```
+
+## Frontmatter Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | Yes | Agent identifier (lowercase, hyphens ok) |
+| `description` | Yes | One-line description shown in `/agents` and used by supervisor for routing |
+| `type` | No | `""` for standard, `"deep_research"` for deep agents |
+| `tools` | No | List of tool names (built-in, lifecycle, or MCP). Omit to get all built-in tools + MCP proxy |
+
+## Deep Research Agents
+
+Set `type: deep_research` for agents that need:
+
+- **Persistent workspace** — files at `.octo/workspace/<date>/`
+- **Planning middleware** — TodoList for tracking multi-step work
+- **Summarization middleware** — automatic context compression
+- **Sub-agent spawning** — delegate subtasks
+
+Deep agents are built with the `deepagents` library and get their own middleware stack automatically.
+
+## Tool Resolution
+
+When you list tools in the `tools:` field, Octo resolves each name against three sources in order:
+
+1. **Built-in tools** — `Read`, `Grep`, `Glob`, `Edit`, `Bash`
+2. **Lifecycle tools** — `task_complete`, `escalate_question` (auto-added even if not listed)
+3. **MCP tools** — any tool from configured MCP servers
+
+If a tool name can't be found in any source, Octo logs a warning at startup. This helps catch typos in AGENT.md.
+
+<Note>
+Every agent automatically gets `task_complete` and `escalate_question` regardless of the `tools:` list. These lifecycle tools ensure agents always report results back to the user.
+</Note>
+
+## MCP Tool Access
+
+Agents can access MCP tools by listing their exact names in the `tools` field. For example, the built-in `context-gatherer` agent uses Outlook, Teams, and web search tools:
+
+```yaml
+tools:
+  - search-query          # Outlook email search
+  - list-mail-messages    # Outlook email listing
+  - find-chat             # Teams chat search
+  - list-chat-messages    # Teams message history
+  - tavily_search         # Web search
+  - Read                  # Built-in filesystem
+  - Grep
+  - Glob
+```
+
+Agents without a `tools` list get proxy access to all MCP tools via `find_tools()` and `call_mcp_tool()`.
+
+## Agent Loading
+
+At startup, Octo loads agents from:
+
+1. **AGENT_DIRS** — external project directories (colon-separated in `.env`)
+2. **`.octo/agents/`** — Octo-native agents
+
+List all loaded agents with `/agents`.
+
+## Tips
+
+<Tip>
+Write clear, specific descriptions — the supervisor uses them to decide which agent handles each request. Vague descriptions lead to poor routing.
+</Tip>
+
+<Note>
+The system prompt (everything below the frontmatter) supports full Markdown. Use headers, lists, and code blocks to structure your agent's instructions.
+</Note>

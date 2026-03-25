@@ -1,0 +1,138 @@
+---
+title: Tool Architecture
+description: How Octo manages tool distribution, deferred loading, and MCP integration
+icon: wrench
+---
+
+Octo distributes tools across agents using a layered system: built-in tools are always available, while MCP tools are deferred behind a search-and-call proxy to keep agent context lean.
+
+## Tool Layers
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Supervisor                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────┐  │
+│  │ Built-in    │  │ Supervisor   │  │ MCP Proxy  │  │
+│  │ Read, Grep  │  │ todos,       │  │ find_tools │  │
+│  │ Glob, Edit  │  │ memory,      │  │ call_mcp   │  │
+│  │ Bash        │  │ skills, ...  │  │ _tool      │  │
+│  └─────────────┘  └──────────────┘  └──────┬─────┘  │
+│                                            │        │
+│                              ┌─────────────▼──────┐ │
+│                              │  MCP Tool Registry │ │
+│                              │  61+ tools from    │ │
+│                              │  5+ servers        │ │
+│                              └────────────────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+## Direct vs Deferred Tools
+
+<CardGroup cols={2}>
+  <Card title="Direct Tools (always bound)" icon="bolt">
+    - **Built-in**: Read, Grep, Glob, Edit, Bash
+    - **Supervisor-only**: write_todos, read_todos, use_skill, write_memory, read_memories, update_long_term_memory, schedule_task, send_file, update_state_md
+    - **Worker-curated**: MCP tools listed in an agent's `tools:` field
+  </Card>
+  <Card title="Deferred Tools (search first)" icon="magnifying-glass">
+    - **All MCP tools** from `.mcp.json` servers
+    - Accessed via `find_tools(query)` + `call_mcp_tool(name, args)`
+    - Schemas loaded on demand, not at agent creation
+  </Card>
+</CardGroup>
+
+## Why Deferred Loading?
+
+LLMs receive all bound tool schemas in their context window. With 5 MCP servers providing 60+ tools, this adds ~30-50K tokens to every request — hurting cost, latency, and tool selection accuracy.
+
+Deferred loading reduces this to **2 tool schemas** (~500 tokens) plus a brief server summary in the system prompt.
+
+| | Direct binding | Deferred loading |
+|---|---|---|
+| **Tokens per request** | ~30-50K for tool schemas | ~500 tokens |
+| **Tool selection** | LLM picks from 60+ options | LLM searches, then calls exactly 1 |
+| **Latency** | Single round-trip | Extra round-trip for `find_tools` |
+| **Scaling** | Degrades with more servers | Constant overhead |
+
+## How It Works
+
+### MCP Tool Registry
+
+When the graph is built, all MCP tools are stored in a module-level registry keyed by tool name:
+
+```python
+_mcp_tool_registry: dict[str, BaseTool] = {}
+_mcp_server_summaries: list[dict] = []
+```
+
+The registry is populated by `_register_mcp_tools(tools_by_server)` during `build_graph()` and refreshed on `/mcp reload`.
+
+### find_tools
+
+The `find_tools(query)` tool searches the registry by keyword matching against tool names and descriptions. It returns up to 15 matches with:
+- Tool name (exact, for use with `call_mcp_tool`)
+- Description (truncated to 200 chars)
+- Full parameter schema (JSON Schema from Pydantic)
+
+### call_mcp_tool
+
+The `call_mcp_tool(tool_name, arguments)` tool:
+1. Looks up the tool in the registry by exact name
+2. Calls `tool.ainvoke(arguments)` asynchronously
+3. Returns the string result
+4. On error, returns a formatted error message with the exception type
+5. If the tool isn't found, suggests similar names
+
+Results flow through `TruncatingToolNode` like any other tool call, so oversized outputs are automatically capped.
+
+### Supervisor Prompt
+
+The supervisor's system prompt includes an auto-generated MCP servers section:
+
+```
+## MCP Tool Access
+
+MCP tools are available via `find_tools(query)` and `call_mcp_tool(name, args)`.
+Workflow: search for tools first, then call them.
+
+Available servers:
+- **github** (25 tools): get_me, list_issues, search_code, create_pull_request, get_file_contents (+20 more)
+- **playwright** (15 tools): browser_navigate, browser_click, browser_snapshot, browser_fill_form, browser_type (+10 more)
+- **tavily** (5 tools): tavily_search, tavily_extract, tavily_crawl, tavily_map, tavily_research
+```
+
+This gives the agent enough context to know *which server* to search without seeing every tool schema.
+
+## Tool Distribution by Agent Type
+
+| Agent Type | Direct Tools | MCP Access |
+|---|---|---|
+| **Supervisor** | Built-in + supervisor-only | `find_tools` + `call_mcp_tool` |
+| **Workers (no filter)** | Built-in | `find_tools` + `call_mcp_tool` |
+| **Workers (with `tools:`)** | Built-in + curated MCP tools | Direct (author curated) |
+| **Deep Research** | deepagents built-in | `find_tools` + `call_mcp_tool` |
+| **Project Workers** | `claude_code` only | None (delegates to Claude Code) |
+
+<Note>
+Workers with an explicit `tools:` list in their AGENT.md get those MCP tools bound directly — the agent author already curated a small set, so deferred loading isn't needed.
+</Note>
+
+## /call — Direct Tool Bypass
+
+The `/call` command bypasses the agent entirely and calls any MCP tool directly from the CLI:
+
+```
+/call github get_me
+/call tavily tavily_search {"query": "LangGraph tutorials"}
+```
+
+This uses the CLI-level `mcp_tools_by_server` map (which is always fully populated regardless of deferred loading) and is useful for debugging and quick lookups.
+
+## Error Handling
+
+| Layer | Mechanism |
+|---|---|
+| **Supervisor** | `TruncatingToolNode` with `handle_tool_errors=True` — catches exceptions, returns error messages |
+| **Workers** | `ToolErrorMiddleware` — catches errors, uses low-tier LLM to explain what went wrong |
+| **call_mcp_tool** | Built-in try/except — returns `[Tool error] name: ExceptionType: message` |
+| **Result size** | `TruncatingToolNode` caps results at 40K chars; `ToolResultLimitMiddleware` on workers |

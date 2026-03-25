@@ -1,0 +1,78 @@
+---
+title: FAQ
+description: Frequently asked questions about Octo
+icon: circle-question
+---
+
+<AccordionGroup>
+  <Accordion title="Which LLM providers does Octo support?">
+    Five providers: **Anthropic** (direct API), **AWS Bedrock**, **OpenAI**, **Azure OpenAI**, and **GitHub Models**. The model factory auto-detects the provider from the model name, or you can set `LLM_PROVIDER` explicitly.
+  </Accordion>
+
+  <Accordion title="Can I use multiple providers at once?">
+    Yes. Different model tiers can use different providers. For example, you could use Bedrock Opus for high-tier tasks and Anthropic Haiku for low-tier summarization.
+  </Accordion>
+
+  <Accordion title="How do I add my own agents?">
+    Two ways:
+    1. **Wizard**: Run `/create-agent` in chat for an interactive, AI-assisted flow
+    2. **Manual**: Create `.octo/agents/<name>/AGENT.md` with YAML frontmatter
+
+    See [Creating Agents](/guides/creating-agents) for details.
+  </Accordion>
+
+  <Accordion title="Can I use Octo without Telegram?">
+    Yes. Telegram is optional. If `TELEGRAM_BOT_TOKEN` is not set, Octo runs as a CLI-only tool.
+  </Accordion>
+
+  <Accordion title="How do I reset a conversation?">
+    Use `/clear` to start a fresh thread, or `octo --resume` to go back to the last session.
+  </Accordion>
+
+  <Accordion title="What happens when context gets too large?">
+    Three automatic layers handle this:
+    1. Tool result truncation (40K char limit)
+    2. Worker summarization middleware (70% threshold)
+    3. Supervisor auto-trim in pre-model hook
+
+    You can also run `/compact` manually or check usage with `/context`.
+  </Accordion>
+
+  <Accordion title="How does the heartbeat work?">
+    A timer fires every N minutes (default 30m). Phase 1 uses a cheap model to check if action is needed. Phase 2 invokes the full graph only when there's something to say. Configure via `.octo/persona/HEARTBEAT.md`.
+  </Accordion>
+
+  <Accordion title="Can agents schedule their own tasks?">
+    Yes. The `schedule_task` tool lets agents create cron jobs. For example, a research agent can schedule a follow-up check in 2 hours.
+  </Accordion>
+
+  <Accordion title="How do I connect MCP servers?">
+    Define them in `.mcp.json` at your workspace root, or use `/mcp add` for an interactive wizard. See [MCP Servers](/features/mcp-servers).
+  </Accordion>
+
+  <Accordion title="Is Octo free to use?">
+    Octo itself is open-source (MIT license). You pay for the LLM API usage with your chosen provider.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="octo doctor shows failures">
+    Run `octo doctor --fix` to re-run the setup wizard for failing checks. Common issues:
+    - Missing or invalid API key
+    - `.octo/` directory not scaffolded (run `octo init`)
+    - MCP server not reachable
+  </Accordion>
+
+  <Accordion title="Agent not appearing in /agents">
+    Check that:
+    - The AGENT.md file has valid YAML frontmatter with `name` and `description`
+    - The agent directory is included in `AGENT_DIRS` or is under `.octo/agents/`
+    - There are no YAML parsing errors (check Octo startup logs)
+  </Accordion>
+
+  <Accordion title="Bedrock timeout errors">
+    Bedrock has a `read_timeout=300` by default. For very long operations, this may not be enough. Octo's retry module handles transient timeouts with exponential backoff.
+  </Accordion>
+</AccordionGroup>

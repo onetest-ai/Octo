@@ -1,0 +1,47 @@
+---
+title: Contributing
+description: How to contribute to Octo
+icon: code-pull-request
+---
+
+We welcome contributions! See the full [CONTRIBUTING.md](https://github.com/onetest-ai/Octo/blob/main/CONTRIBUTING.md) on GitHub for detailed guidelines.
+
+## Quick Start
+
+```bash
+git clone https://github.com/onetest-ai/Octo.git
+cd Octo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[cli]"
+octo init
+```
+
+## Key Guidelines
+
+- **Verify syntax** after editing any Python file: `.venv/bin/python -m py_compile octo/<file>.py`
+- **Follow existing patterns** — the codebase is consistent
+- **Lazy-import** heavy dependencies inside factory functions
+- **One change per PR** — keep PRs small and focused
+
+## Common Changes
+
+Since v0.5.0, the package is split into two layers: `octo/core/` (embeddable engine) and `octo/` root (CLI-specific code). Root-level files like `graph.py` and `middleware.py` are backward-compat re-export shims.
+
+| Change Type | Files to Update |
+|---|---|
+| New LLM provider | config.py, models.py, wizard/onboarding.py, wizard/validators.py, wizard/doctor.py, README.md |
+| New slash command | cli.py, ui.py |
+| New built-in tool | core/tools/, core/graph.py |
+| New middleware | core/middleware.py |
+| New storage backend | core/storage/ |
+
+## Reporting Issues
+
+- Check [existing issues](https://github.com/onetest-ai/Octo/issues) first
+- Include: Python version, OS, error traceback, steps to reproduce
+- For model/provider issues: include the model name and provider
+
+## License
+
+By contributing, your contributions are licensed under [MIT](https://github.com/onetest-ai/Octo/blob/main/LICENSE).

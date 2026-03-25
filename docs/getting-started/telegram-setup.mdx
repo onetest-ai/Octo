@@ -1,0 +1,155 @@
+---
+title: Telegram Setup
+description: Set up the Telegram bot for mobile access to Octo
+icon: paper-plane
+---
+
+Octo includes a full bidirectional Telegram bot that shares the same conversation thread as the CLI. Chat with your agents from your phone.
+
+## Create a Telegram Bot
+
+<Steps>
+  <Step title="Talk to BotFather">
+    Open Telegram and search for [@BotFather](https://t.me/BotFather). Send:
+
+    ```
+    /newbot
+    ```
+
+    Follow the prompts to name your bot.
+  </Step>
+
+  <Step title="Copy the token">
+    BotFather will give you a token like:
+
+    ```
+    123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+    ```
+  </Step>
+
+  <Step title="Get your Telegram user ID">
+    Talk to [@userinfobot](https://t.me/userinfobot) to get your numeric user ID.
+  </Step>
+
+  <Step title="Configure .env">
+    ```env
+    TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+    TELEGRAM_OWNER_ID=your_numeric_id
+    ```
+  </Step>
+
+  <Step title="Start Octo">
+    ```bash
+    octo
+    ```
+
+    The Telegram bot starts automatically alongside the CLI.
+  </Step>
+</Steps>
+
+## Features
+
+The Telegram transport supports:
+
+- **Text messages** — full conversation with agents
+- **Voice messages** — transcribed via Whisper, replied to with TTS (requires ElevenLabs)
+- **File attachments** — agents send research reports and files as Telegram documents
+- **Proactive messages** — heartbeat and cron results delivered to your phone
+- **Rich formatting** — Markdown-to-HTML conversion for code blocks, bold, lists
+- **Remote management** — full slash command support for managing Octo from your phone
+
+## Telegram Commands
+
+Octo registers its commands with Telegram on startup via `set_my_commands()`, so they appear in the autocomplete menu when you tap `/`.
+
+### Session Management
+
+| Command | Description |
+|---|---|
+| `/help` | Show all available Telegram commands |
+| `/clear` | Reset conversation (new thread) |
+| `/compact` | Summarize older messages to free context |
+| `/context` | Show context window usage |
+
+### Info
+
+| Command | Description |
+|---|---|
+| `/agents` | List loaded agents |
+| `/model` | Show current model |
+
+### Skills
+
+| Command | Description |
+|---|---|
+| `/skills` | List installed skills |
+| `/skills search <query>` | Search the skill registry |
+| `/skills install <name>` | Install a skill + rebuild graph |
+| `/skills remove <name>` | Remove a skill + rebuild graph |
+
+### MCP Servers
+
+| Command | Description |
+|---|---|
+| `/mcp` | Show MCP server status |
+| `/mcp find <query>` | Search the MCP registry |
+| `/mcp remove <name>` | Remove a server + rebuild graph |
+| `/mcp disable <name>` | Disable a server + rebuild graph |
+| `/mcp enable <name>` | Enable a server + rebuild graph |
+| `/mcp reload` | Reload all MCP servers |
+
+<Note>
+`/mcp install` requires an interactive wizard and is not available via Telegram. Use the CLI or ask the AI to help configure it.
+</Note>
+
+### System
+
+| Command | Description |
+|---|---|
+| `/reload` | Hot-reload: re-reads `.env`, reloads config, rebuilds graph |
+| `/restart` | Cold-restart: replaces the process via `os.execv` (same thread) |
+
+<Tip>
+If Octo gets into a bad state (context overflow, stuck agent, broken tool calls), send `/restart` from Telegram to cold-restart without going to your Mac. The conversation resumes in the same thread.
+</Tip>
+
+### Pass-Through
+
+Any unrecognized `/command` passes through to the AI supervisor as regular text. This means `/<agent_name> do something` works from Telegram too.
+
+## User Authorization
+
+By default, only the owner (configured via `TELEGRAM_OWNER_ID`) can use the bot. Manage access with:
+
+| Command | Description |
+|---|---|
+| `/authorize <user_id>` | Grant access to a user |
+| `/authorize` | List authorized users |
+| `/revoke <user_id>` | Remove access |
+
+You can also reply to someone's message and send `/authorize` to grant them access.
+
+Authorized users are stored in `.octo/authorized_users.json`.
+
+## Shared State
+
+The Telegram bot shares the same conversation thread and graph lock as the CLI. This means:
+
+- Messages from CLI and Telegram appear in the same conversation
+- Agents have full context regardless of which transport you use
+- The `asyncio.Lock` prevents race conditions between transports
+
+<Warning>
+If you're using both CLI and Telegram simultaneously, messages are serialized through the graph lock. One transport waits while the other's request is being processed.
+</Warning>
+
+## Voice
+
+Enable voice responses with ElevenLabs:
+
+```env
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...   # optional, uses default voice
+```
+
+Toggle in chat with `/voice on` or `/voice off`.

@@ -1,0 +1,85 @@
+---
+title: Background Workers
+description: Run long-running tasks in the background while you keep chatting
+icon: gears
+---
+
+Background workers let you dispatch tasks that run independently — the supervisor keeps responding while work happens in the background. When a task finishes, results are delivered to CLI and Telegram.
+
+## Task Types
+
+<CardGroup cols={2}>
+  <Card title="Process" icon="terminal">
+    Runs a shell command as a subprocess (e.g., `claude -p "analyze codebase"`). Done when the process exits.
+  </Card>
+  <Card title="Agent" icon="robot">
+    Runs a LangGraph agent with its own tools and context. Done when the agent calls `task_complete`.
+  </Card>
+</CardGroup>
+
+## Quick Start
+
+Dispatch a background task from the CLI:
+
+```
+/bg claude -p "Write unit tests for the auth module"
+```
+
+Or let the supervisor dispatch one automatically — it has a `dispatch_background` tool and will use it when a task is clearly long-running.
+
+## Slash Commands
+
+| Command | Description |
+|---|---|
+| `/bg <command>` | Dispatch a background process task |
+| `/tasks` | List all tasks (running, completed, paused, failed) |
+| `/task <id>` | Show task details and output |
+| `/task <id> cancel` | Cancel a running task |
+| `/task <id> resume <answer>` | Resume a paused task with your answer |
+
+## Task Lifecycle
+
+```
+dispatched → running → completed
+                    → failed
+                    → paused (waiting for user input)
+                         → resumed → running → ...
+```
+
+Tasks can pause themselves by calling `escalate_question` — the agent asks a question, execution pauses, and the user answers via `/task <id> resume <answer>`.
+
+## Escalation
+
+When a background agent needs user input:
+
+1. Agent calls `escalate_question("Should I also refactor the helper functions?")`
+2. Task status changes to **paused**
+3. You get a notification (CLI + Telegram)
+4. You respond: `/task abc123 resume yes, refactor them`
+5. Agent continues with your answer
+
+## Persistence
+
+Tasks are stored as JSON files in `.octo/tasks/`. They survive restarts — on next launch, you can check results of previously completed tasks with `/tasks`.
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `BG_MAX_CONCURRENT` | `3` | Maximum parallel background tasks |
+| `ADDITIONAL_CLAUDE_ARGS` | — | Extra flags injected into all `claude -p` subprocess calls |
+
+<Note>
+Process tasks run with **no timeout** by default — they complete when the subprocess exits naturally. The supervisor can set an explicit timeout (in seconds) when dispatching via the `dispatch_background` tool if needed. You can always cancel a task manually with `/task <id> cancel`.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Creating Agents" icon="wrench" href="/octo/guides/creating-agents">
+    Build agents that can run as background workers
+  </Card>
+  <Card title="Slash Commands" icon="terminal" href="/octo/guides/slash-commands">
+    Full command reference
+  </Card>
+</CardGroup>

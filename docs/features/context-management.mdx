@@ -1,0 +1,112 @@
+---
+title: Context Management
+description: Five layers of protection against context overflow plus prompt caching
+icon: brain
+---
+
+Long conversations can exhaust the model's context window. Octo has five automatic layers of protection plus manual controls.
+
+## Automatic Protection
+
+### Layer 1: Tool Result Truncation
+
+`TruncatingToolNode` at the supervisor level caps tool results at 20K characters before they enter the checkpoint. This prevents a single large file read or API response from filling the context window.
+
+Configurable via:
+
+```env
+TOOL_RESULT_LIMIT=20000
+```
+
+### Layer 2: Tool Result Aging
+
+After each invocation, `auto_trim_tool_results` scans the checkpoint for old tool results (beyond the last 10 messages). Results exceeding 4K characters are:
+
+1. **Saved to disk** at `.octo/workspace/<date>/tool-result-<name>-<ts>.md`
+2. **Replaced in the checkpoint** with a truncated version containing a file path reference
+
+This keeps the checkpoint lean while preserving full data on disk. The agent can retrieve the original result via the Read tool if needed.
+
+### Layer 3: Worker Summarization
+
+`SummarizationMiddleware` on worker agents triggers when:
+- Context reaches 70% capacity, **or**
+- Message count exceeds 100
+
+When triggered, older messages are summarized by a low-tier LLM and replaced with a compact summary, keeping the most recent 20 messages intact.
+
+### Layer 4: Supervisor Auto-Trim
+
+The `pre_model_hook` on the supervisor monitors context usage before every LLM call. When context exceeds 70%, it trims old messages while preserving 40% of the most recent history.
+
+### Layer 5: Prompt Caching
+
+Prompt caching reduces cost and latency by reusing previously processed context. Octo injects provider-specific cache hints automatically:
+
+| Provider | Mechanism | Savings | How |
+|---|---|---|---|
+| **Anthropic** | `cache_control: {"type": "ephemeral"}` | ~90% on cached tokens | Two breakpoints: system message + conversation prefix |
+| **AWS Bedrock** | `cachePoint` blocks | ~90% on cached tokens | System message breakpoint |
+| **OpenAI / Azure** | Automatic prefix caching | ~50% on prefixes ≥1024 tokens | No injection needed — free |
+| **Gemini** | N/A | — | Uses Google's server-side caching |
+| **Local** | N/A | — | Depends on inference server |
+
+Caching is applied at two levels:
+- **Workers**: `AnthropicPromptCachingMiddleware` + `BedrockCachingMiddleware` in the middleware stack
+- **Supervisor**: Cache breakpoints injected by `pre_model_hook` into `llm_input_messages`
+
+## Context Window Sizes
+
+Octo auto-detects the context limit from the model name:
+
+| Model | Context Window |
+|---|---|
+| Claude (all) | 200,000 tokens |
+| GPT-4o | 128,000 tokens |
+| o1, o3, o4 | 200,000 tokens |
+| Gemini 2.5 | 1,000,000 tokens |
+| Local models | 32,000 tokens (conservative default) |
+
+## Manual Controls
+
+### /compact
+
+Force-summarize older messages to free up context:
+
+```
+/compact
+```
+
+Uses a low-tier LLM to summarize old messages, then replaces them with the summary. Useful when you notice responses degrading.
+
+### /context
+
+Visual context window usage bar:
+
+```
+/context
+```
+
+Shows a color-coded progress bar:
+
+| Color | Quality | Usage |
+|---|---|---|
+| Green | PEAK | < 50% |
+| Yellow | GOOD | 50-70% |
+| Orange | DEGRADING | 70-85% |
+| Red | POOR | > 85% |
+
+## Tuning
+
+All thresholds are configurable in `.env`:
+
+```env
+SUMMARIZATION_TRIGGER_FRACTION=0.7     # 0.0–1.0
+SUMMARIZATION_TRIGGER_TOKENS=100000
+SUMMARIZATION_KEEP_TOKENS=20000
+SUPERVISOR_MSG_CHAR_LIMIT=30000        # per-message safety net
+```
+
+<Tip>
+If you notice responses becoming less coherent or losing track of context, run `/context` to check usage, then `/compact` to free space. Old tool results are automatically saved to `.octo/workspace/` before removal — the agent can retrieve them if needed.
+</Tip>
