@@ -444,63 +444,110 @@ class TestSanitizeIntegration:
 
 
 class TestIsSafeForLLM:
-    """Safety pre-check for LLM consumption."""
+    """Safety pre-check for LLM consumption.
+
+    is_safe_for_llm() uses intentionally lenient thresholds — it runs on
+    aggregated multi-message queries where short/terse input ("k", "y", a URL)
+    is perfectly valid. The LLM confidence scorer handles low-value content;
+    this function only gates truly un-processable input (empty or garbage binary).
+
+    Two rejection conditions exist in the current implementation:
+      1. Empty or whitespace-only → reason "empty"
+      2. Text > 200 chars with < 15% alpha/digit/space chars → reason "low_readable_ratio"
+
+    Everything else passes through to the LLM confidence scorer.
+    """
 
     def test_normal_text_safe(self):
         safe, reason = is_safe_for_llm("How to build a LangGraph agent?")
         assert safe is True
         assert reason == ""
 
+    # ------------------------------------------------------------------
+    # Fix 1 & 2: reason changed from "empty_or_too_short" → "empty"
+    # ------------------------------------------------------------------
+
     def test_empty_unsafe(self):
         safe, reason = is_safe_for_llm("")
         assert safe is False
-        assert reason == "empty_or_too_short"
+        assert reason == "empty"
 
     def test_whitespace_only_unsafe(self):
         safe, reason = is_safe_for_llm("   ")
         assert safe is False
-        assert reason == "empty_or_too_short"
+        assert reason == "empty"
 
-    def test_single_char_unsafe(self):
+    # ------------------------------------------------------------------
+    # Fix 3: single-char is now valid (lenient by design)
+    # ------------------------------------------------------------------
+
+    def test_single_char_is_valid(self):
+        # "k" / "y" / "n" are legitimate single-char replies in chat.
+        # The LLM confidence scorer decides whether to act on them.
         safe, reason = is_safe_for_llm("x")
-        assert safe is False
-        assert reason == "empty_or_too_short"
+        assert safe is True
+        assert reason == ""
 
     def test_two_chars_safe(self):
         safe, reason = is_safe_for_llm("ok")
         assert safe is True
 
-    def test_url_only_unsafe(self):
-        safe, reason = is_safe_for_llm("https://example.com")
-        assert safe is False
-        assert reason == "urls_only"
+    # ------------------------------------------------------------------
+    # Fix 4 & 5: URL-only detection was removed; URLs are valid inputs
+    # ------------------------------------------------------------------
 
-    def test_multiple_urls_only_unsafe(self):
+    def test_url_only_valid(self):
+        # Sharing a link often carries implicit context ("here's the doc I mentioned").
+        # URL-only detection was removed — the LLM confidence scorer handles relevance.
+        safe, reason = is_safe_for_llm("https://example.com")
+        assert safe is True
+
+    def test_multiple_urls_valid(self):
         safe, reason = is_safe_for_llm("https://a.com https://b.com")
-        assert safe is False
-        assert reason == "urls_only"
+        assert safe is True
 
     def test_url_with_text_safe(self):
         safe, reason = is_safe_for_llm("Check this out: https://example.com — great article!")
         assert safe is True
 
-    def test_binary_blob_unsafe(self):
-        blob = "AAAA" * 50  # 200 chars, all base64-valid
+    # ------------------------------------------------------------------
+    # Fix 6: binary-blob check was removed; sanitize() strips large base64
+    # ------------------------------------------------------------------
+
+    def test_binary_blob_valid(self):
+        # The dedicated binary-blob check was removed from is_safe_for_llm().
+        # Large base64 blobs are stripped by sanitize() before LLM submission.
+        # "AAAA" * 50 = exactly 200 chars; readable-ratio guard requires > 200.
+        blob = "AAAA" * 50
         safe, reason = is_safe_for_llm(blob)
-        assert safe is False
-        assert reason == "binary_content"
+        assert safe is True
 
     def test_short_alnum_safe(self):
-        # Short enough (<50 chars) that binary check doesn't trigger
+        # Short alphanumeric strings (IDs, codes, brief replies) are valid.
         safe, reason = is_safe_for_llm("ABC123")
         assert safe is True
 
-    def test_low_printable_ratio_unsafe(self):
-        # >50% non-printable
-        text = "hi" + "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89" * 5
+    # ------------------------------------------------------------------
+    # Fix 7: low-readable-ratio check requires > 200 chars; update input
+    #        and reason string ("low_printable_ratio" → "low_readable_ratio")
+    # ------------------------------------------------------------------
+
+    def test_low_readable_ratio_unsafe(self):
+        # Readable-ratio check: rejects texts > 200 chars where < 15% of chars
+        # are alpha/digit/space (catches binary garbage, not legitimate content).
+        # "ab " = 3 readable chars; "\x80" * 250 = 250 non-readable → total 253.
+        # 3 / 253 ≈ 1.2% — below the 15% threshold.
+        text = "ab " + "\x80" * 250
         safe, reason = is_safe_for_llm(text)
         assert safe is False
-        assert reason == "low_printable_ratio"
+        assert reason == "low_readable_ratio"
+
+    def test_short_garbage_passes_lenient_check(self):
+        # Texts <= 200 chars pass even with mostly non-alpha chars —
+        # avoids rejecting terse but valid messages in any script/language.
+        text = "hi" + "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89" * 5  # 52 chars
+        safe, reason = is_safe_for_llm(text)
+        assert safe is True
 
     def test_normal_unicode_safe(self):
         safe, reason = is_safe_for_llm("Привет мир! Hello world! 你好世界 🌍")

@@ -6,7 +6,24 @@ on:
       - "v*"
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        # [cli] extra pulls in python-dotenv, required for octo.config import
+        run: pip install -e ".[cli]" pytest pytest-asyncio anyio
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
